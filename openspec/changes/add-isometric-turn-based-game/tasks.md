@@ -11,3 +11,6 @@
 - [x] 1.10 Add adjustable lighting nodes and runtime controls
 - [x] 1.11 Add a minimal debug UI for current turn and actions
 - [x] 1.12 Add basic validation tests or playtest checklist
+- [x] 1.13 Add a mountain buffer ring to bound the battle zone
+- [x] 1.14 Add clustered props in the battle zone and dense buffer props
+- [x] 1.15 Add parchment HUD panels and menu bar (File/Debug)

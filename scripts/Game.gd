@@ -12,6 +12,7 @@ extends Node3D
 @export var camera_zoom_step: float = 1.0
 @export var camera_zoom_min: float = 8.0
 @export var camera_zoom_max: float = 40.0
+@export var use_networked_game: bool = false
 @export var tree_count: int = 10
 @export var rock_count: int = 8
 @export var buffer_tree_count: int = 18
@@ -26,19 +27,37 @@ extends Node3D
 @onready var combat_label: Label = $UI/TopRightPanel/MarginContainer/CombatLabel
 @onready var movement_label: Label = $UI/BottomLeftPanel/MarginContainer/MovementLabel
 @onready var system_label: Label = $UI/BottomRightPanel/MarginContainer/SystemLabel
+@onready var system_panel: PanelContainer = $UI/BottomRightPanel
 @onready var file_menu: MenuButton = $UI/MenuBar/MarginContainer/HBoxContainer/FileMenu
 @onready var debug_menu: MenuButton = $UI/MenuBar/MarginContainer/HBoxContainer/DebugMenu
 @onready var camera: Camera3D = $Camera3D
+@onready var join_panel: PanelContainer = $UI/JoinPanel
+@onready var join_button: Button = $UI/JoinPanel/MarginContainer/VBoxContainer/JoinButton
+@onready var join_status: Label = $UI/JoinPanel/MarginContainer/VBoxContainer/JoinStatus
+@onready var network_console_panel: PanelContainer = $UI/NetworkConsolePanel
+@onready var network_console_label: Label = $UI/NetworkConsolePanel/MarginContainer/ConsoleLabel
 
 var _players: Array[PlayerUnit] = []
 var _combat_log: Array[String] = []
 var _movement_log: Array[String] = []
 var _turn_log: Array[String] = []
 var _system_log: Array[String] = []
+var _network_log: Array[String] = []
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _is_panning: bool = false
 var _blocked_axials: Dictionary = {}
 var _prop_labels: Dictionary = {}
+var _network: Node
+var _network_players_by_id: Dictionary = {}
+var _network_props: Dictionary = {}
+var _network_initialized: bool = false
+var _network_active_turn_id: int = 0
+var _network_user_id: int = 0
+var _network_channel_id: int = 0
+var _network_player_names: Dictionary = {}
+var _use_networked_game: bool = false
+var _join_attempted: bool = false
+var _debug_console_visible: bool = false
 var _current_target: PlayerUnit = null
 var _adjacent_targets: Array[PlayerUnit] = []
 var _blood_decal_texture: Texture2D
@@ -68,6 +87,7 @@ var _light_presets: Array = [
 ]
 
 const MAX_LOG_LINES: int = 6
+const NETWORK_LOG_LINES: int = 12
 const MOVE_DIRECTIONS: Array[Vector2i] = [
 	Vector2i(0, -1),
 	Vector2i(0, 1),
@@ -97,6 +117,8 @@ const SUN_MARKER_RADIUS: float = 14.0
 const SUN_MARKER_SIZE: float = 0.6
 const MENU_FILE_EXIT: int = 1
 const MENU_DEBUG_STUB: int = 1
+const NETWORK_GRID_SIZE: int = 64
+const NETWORK_GRID_CENTER: int = 32
 
 func _ready() -> void:
 	_rng.randomize()
@@ -106,12 +128,19 @@ func _ready() -> void:
 	_create_sun_marker()
 	_init_sun_from_lighting()
 	_setup_menus()
+	_setup_debug_console()
+	_setup_join_ui()
 	_register_buffer_tiles()
-	_spawn_players()
-	_spawn_props()
+	_use_networked_game = use_networked_game and get_node_or_null("/root/GameNetwork") != null
+	if _use_networked_game:
+		_start_network_join()
+	else:
+		_spawn_players()
+		_spawn_props()
 	turn_manager.active_player_changed.connect(_on_active_player_changed)
-	turn_manager.start_turns()
-	_focus_camera_on_player(_get_player_by_id(1))
+	if not _use_networked_game:
+		turn_manager.start_turns()
+		_focus_camera_on_player(_get_player_by_id(1))
 	_update_turn_panel()
 	_update_combat_panel()
 	_update_movement_panel()
@@ -172,6 +201,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed("light_color_cycle"):
 		_cycle_light_colors()
+		return
+	if _use_networked_game:
+		_handle_network_input(event)
 		return
 	if not _is_human_turn():
 		return
@@ -442,6 +474,27 @@ func _on_active_player_changed(_player: PlayerUnit) -> void:
 func _update_turn_panel() -> void:
 	if turn_label == null:
 		return
+	if _use_networked_game:
+		var lines: Array[String] = ["Turn Carousel"]
+		var ids: Array = _network_players_by_id.keys()
+		ids.sort()
+		if ids.is_empty():
+			lines.append("Previous: -")
+			lines.append("Current: -")
+			lines.append("Next: -")
+		else:
+			var current_id: int = _network_active_turn_id
+			if current_id <= 0 or not ids.has(current_id):
+				current_id = ids[0]
+			var index: int = ids.find(current_id)
+			var prev_id: int = ids[(index - 1 + ids.size()) % ids.size()]
+			var next_id: int = ids[(index + 1) % ids.size()]
+			lines.append("Previous: %s" % _network_player_label(prev_id))
+			lines.append("Current: %s" % _network_player_label(current_id))
+			lines.append("Next: %s" % _network_player_label(next_id))
+		lines.append("Players: %s" % _network_players_by_id.size())
+		turn_label.text = "\n".join(lines)
+		return
 	var active: PlayerUnit = turn_manager.get_active_player()
 	var lines: Array[String] = ["Turn & Status"]
 	if active:
@@ -542,7 +595,7 @@ func _on_file_menu_id_pressed(id: int) -> void:
 
 func _on_debug_menu_id_pressed(id: int) -> void:
 	if id == MENU_DEBUG_STUB:
-		_log_system("Debug: stub")
+		_toggle_network_console()
 
 func _ensure_input_map() -> void:
 	_ensure_action("move_up", KEY_W)
@@ -571,6 +624,321 @@ func _ensure_action(action_name: String, keycode: Key) -> void:
 	var key_event: InputEventKey = InputEventKey.new()
 	key_event.keycode = keycode
 	InputMap.action_add_event(action_name, key_event)
+
+func _setup_debug_console() -> void:
+	if system_panel != null:
+		system_panel.visible = false
+	if network_console_panel == null:
+		return
+	network_console_panel.visible = false
+	_update_network_console()
+
+func _toggle_network_console() -> void:
+	if network_console_panel == null:
+		return
+	_debug_console_visible = not _debug_console_visible
+	network_console_panel.visible = _debug_console_visible
+	if _debug_console_visible:
+		_update_network_console()
+
+func _log_network(text: String) -> void:
+	_append_console_log(_network_log, text, NETWORK_LOG_LINES)
+	_update_network_console()
+
+func _append_console_log(log: Array[String], text: String, max_lines: int) -> void:
+	if text.is_empty():
+		return
+	log.append(text)
+	while log.size() > max_lines:
+		log.pop_front()
+
+func _update_network_console() -> void:
+	if network_console_label == null:
+		return
+	var lines: Array[String] = []
+	lines.append("Network Console")
+	lines.append("URL: %s" % _network_base_url())
+	lines.append("User: %s | Channel: %s" % [_network_user_id, _channel_id_label()])
+	lines.append("Active Turn: %s" % _network_active_turn_id)
+	lines.append("--- Connectivity ---")
+	if _network_log.is_empty():
+		lines.append("(no events)")
+	else:
+		lines.append_array(_network_log)
+	lines.append("--- Game Status ---")
+	if _system_log.is_empty():
+		lines.append("(no status)")
+	else:
+		lines.append_array(_system_log)
+	network_console_label.text = "\n".join(lines)
+
+func _network_base_url() -> String:
+	if _network == null:
+		return "-"
+	return _network.base_url
+
+func _channel_id_label() -> String:
+	return "-" if _network_channel_id <= 0 else str(_network_channel_id)
+
+func _network_player_label(user_id: int) -> String:
+	return str(user_id)
+
+func _update_turn_markers() -> void:
+	for player in _players:
+		if player == null:
+			continue
+		player.set_is_current_turn(player.player_id == _network_active_turn_id)
+
+func _setup_join_ui() -> void:
+	if join_panel == null:
+		return
+	join_panel.visible = not use_networked_game
+	join_status.text = "Offline"
+	if not join_button.pressed.is_connected(_on_join_pressed):
+		join_button.pressed.connect(_on_join_pressed)
+
+func _on_join_pressed() -> void:
+	_start_network_join(true)
+
+func _start_network_join(force: bool = false) -> void:
+	if _join_attempted and not force:
+		return
+	if get_node_or_null("/root/GameNetwork") == null:
+		_set_join_status("GameNetwork missing")
+		_log_network("Network: GameNetwork missing")
+		return
+	_join_attempted = true
+	_use_networked_game = true
+	_clear_network_state()
+	join_panel.visible = true
+	join_button.disabled = true
+	_set_join_status("Connecting...")
+	_log_network("Network: join requested")
+	_setup_network()
+
+func _set_join_status(text: String) -> void:
+	if join_status == null:
+		return
+	join_status.text = text
+
+func _setup_network() -> void:
+	_network = get_node("/root/GameNetwork")
+	if _network == null:
+		_use_networked_game = false
+		join_button.disabled = false
+		_set_join_status("GameNetwork missing")
+		_log_network("Network: GameNetwork missing")
+		return
+	_network_user_id = _network.user_id
+	if not _network.snapshot_received.is_connected(_on_network_snapshot_received):
+		_network.snapshot_received.connect(_on_network_snapshot_received)
+	if not _network.update_received.is_connected(_on_network_update_received):
+		_network.update_received.connect(_on_network_update_received)
+	if not _network.error_received.is_connected(_on_network_error_received):
+		_network.error_received.connect(_on_network_error_received)
+	if _network.has_signal("status_received"):
+		if not _network.status_received.is_connected(_on_network_status_received):
+			_network.status_received.connect(_on_network_status_received)
+	_network.connect_to_game()
+	_log_network("Network: connecting to %s" % _network.base_url)
+
+func _handle_network_input(event: InputEvent) -> void:
+	if event.is_action_pressed("move_up"):
+		_send_network_command("move up")
+		return
+	if event.is_action_pressed("move_down"):
+		_send_network_command("move down")
+		return
+	if event.is_action_pressed("move_left"):
+		_send_network_command("move left")
+		return
+	if event.is_action_pressed("move_right"):
+		_send_network_command("move right")
+		return
+	if event.is_action_pressed("action_attack"):
+		_send_network_command("attack")
+		return
+	if event.is_action_pressed("action_heal"):
+		_send_network_command("heal")
+		return
+
+func _send_network_command(command: String) -> void:
+	if _network == null:
+		return
+	if not _is_network_turn():
+		_log_system("Not your turn")
+		_log_network("Blocked: not your turn")
+		return
+	_network.send_command(command)
+	_log_system("Sent: %s" % command)
+	_log_network("Sent: %s" % command)
+
+func _is_network_turn() -> bool:
+	if _network_active_turn_id <= 0:
+		return true
+	if _network_user_id <= 0:
+		return true
+	return _network_active_turn_id == _network_user_id
+
+func _on_network_snapshot_received(snapshot: Dictionary) -> void:
+	if _network != null:
+		_network_user_id = _network.user_id
+		_network_channel_id = _network.channel_id
+	_apply_network_snapshot(snapshot)
+	var players: Variant = snapshot.get("players", [])
+	var obstacles: Variant = snapshot.get("obstacles", [])
+	var player_count: int = players.size() if typeof(players) == TYPE_ARRAY else 0
+	var obstacle_count: int = obstacles.size() if typeof(obstacles) == TYPE_ARRAY else 0
+	_log_network("Snapshot: players=%s obstacles=%s turn=%s" % [player_count, obstacle_count, _network_active_turn_id])
+	join_button.disabled = false
+	_set_join_status("Connected")
+	join_panel.visible = false
+
+func _on_network_update_received(_update: Dictionary) -> void:
+	_update_turn_panel()
+
+func _on_network_error_received(message: String) -> void:
+	_log_system("Network error: %s" % message)
+	_log_network("Error: %s" % message)
+	join_button.disabled = false
+	_set_join_status(message)
+
+func _on_network_status_received(message: String) -> void:
+	_log_network(message)
+
+func _apply_network_snapshot(snapshot: Dictionary) -> void:
+	if not _network_initialized:
+		_clear_network_state()
+		_network_initialized = true
+	_network_active_turn_id = int(snapshot.get("active_turn_user_id", 0))
+	var players: Variant = snapshot.get("players", [])
+	if typeof(players) == TYPE_ARRAY:
+		_sync_network_players(players)
+	var obstacles: Variant = snapshot.get("obstacles", [])
+	if typeof(obstacles) == TYPE_ARRAY:
+		_sync_network_obstacles(obstacles)
+	_update_turn_markers()
+	var local_player: PlayerUnit = _get_network_player(_network_user_id)
+	if local_player != null:
+		_focus_camera_on_player(local_player)
+	_update_turn_panel()
+
+func _clear_network_state() -> void:
+	for player in _players:
+		if is_instance_valid(player):
+			player.queue_free()
+	_players.clear()
+	_network_players_by_id.clear()
+	_network_player_names.clear()
+	if props_container != null:
+		for child in props_container.get_children():
+			child.queue_free()
+	_network_props.clear()
+	_prop_labels.clear()
+	_blocked_axials.clear()
+	_register_buffer_tiles()
+
+func _sync_network_players(players: Array) -> void:
+	var seen: Dictionary = {}
+	for entry in players:
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		var user_id: int = int(entry.get("user_id", 0))
+		if user_id <= 0:
+			continue
+		seen[user_id] = true
+		var player: PlayerUnit = _get_network_player(user_id)
+		if player == null:
+			player = _spawn_network_player(user_id)
+		if player == null:
+			continue
+		_apply_network_player_state(player, entry)
+		var display_name: String = str(entry.get("display_name", ""))
+		var username: String = str(entry.get("username", ""))
+		var label: String = display_name if not display_name.is_empty() else username
+		_network_player_names[user_id] = label if not label.is_empty() else "P%s" % user_id
+	var keys: Array = _network_players_by_id.keys()
+	for key in keys:
+		if not seen.has(key):
+			_remove_network_player(_network_players_by_id[key])
+
+func _spawn_network_player(user_id: int) -> PlayerUnit:
+	if player_scene == null:
+		return null
+	var player: PlayerUnit = player_scene.instantiate() as PlayerUnit
+	player.player_id = user_id
+	player_container.add_child(player)
+	_players.append(player)
+	_network_players_by_id[user_id] = player
+	return player
+
+func _get_network_player(user_id: int) -> PlayerUnit:
+	if _network_players_by_id.has(user_id):
+		return _network_players_by_id[user_id]
+	return null
+
+func _remove_network_player(player: PlayerUnit) -> void:
+	if player == null:
+		return
+	_players.erase(player)
+	_network_players_by_id.erase(player.player_id)
+	_network_player_names.erase(player.player_id)
+	if is_instance_valid(player):
+		player.queue_free()
+
+func _apply_network_player_state(player: PlayerUnit, entry: Dictionary) -> void:
+	var position_x: int = int(entry.get("position_x", 0))
+	var position_y: int = int(entry.get("position_y", 0))
+	var health: int = int(entry.get("health", player.health))
+	var max_health: int = int(entry.get("max_health", player.max_health))
+	var is_npc: bool = bool(entry.get("is_npc", false))
+	var axial: Vector2i = _grid_to_axial(position_x, position_y)
+	player.set_axial_position(axial)
+	var height: float = terrain.get_tile_height(axial)
+	player.position = terrain.axial_to_world(axial, height) + Vector3(0.0, 0.6, 0.0)
+	player.set_health(health, max_health)
+	player.set_is_npc(is_npc)
+
+func _sync_network_obstacles(obstacles: Array) -> void:
+	var seen: Dictionary = {}
+	for entry in obstacles:
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		var position_x: int = int(entry.get("x", 0))
+		var position_y: int = int(entry.get("y", 0))
+		var kind: String = str(entry.get("type", "stone"))
+		var axial: Vector2i = _grid_to_axial(position_x, position_y)
+		seen[axial] = true
+		if not _network_props.has(axial):
+			var prop: Node3D = _create_tree() if kind == "tree" else _create_rock()
+			if prop == null:
+				continue
+			_place_prop(prop, axial, false)
+			_network_props[axial] = prop
+		_prop_labels[axial] = "Tree" if kind == "tree" else "Stone"
+	var keys: Array = _network_props.keys()
+	for key in keys:
+		if not seen.has(key):
+			var prop_node: Node3D = _network_props[key]
+			if is_instance_valid(prop_node):
+				prop_node.queue_free()
+			_network_props.erase(key)
+			_prop_labels.erase(key)
+	_blocked_axials.clear()
+	_register_buffer_tiles()
+	for key in seen.keys():
+		_blocked_axials[key] = true
+
+func _grid_to_axial(x: int, y: int) -> Vector2i:
+	if terrain == null:
+		return Vector2i.ZERO
+	var radius: int = max(terrain.play_radius, 1)
+	var scale: float = float(radius) / float(max(NETWORK_GRID_CENTER, 1))
+	var q: int = int(round((x - NETWORK_GRID_CENTER) * scale))
+	var r: int = int(round((y - NETWORK_GRID_CENTER) * scale))
+	q = clamp(q, -radius, radius)
+	r = clamp(r, -radius, radius)
+	return Vector2i(q, r)
 
 func _adjust_directional_intensity(delta: float) -> void:
 	if lighting_rig == null:
@@ -729,6 +1097,7 @@ func _log_turn(text: String) -> void:
 func _log_system(text: String) -> void:
 	_append_log(_system_log, text)
 	_update_system_panel()
+	_update_network_console()
 
 func _is_human(player: PlayerUnit) -> bool:
 	return player != null and player.player_id == 1
@@ -898,6 +1267,9 @@ func _create_hover_marker() -> void:
 	add_child(_hover_marker)
 
 func _update_hover_from_mouse(screen_pos: Vector2) -> void:
+	if _use_networked_game:
+		_clear_hover()
+		return
 	if not _is_human_turn() or _is_human_moving:
 		_clear_hover()
 		return
@@ -944,6 +1316,8 @@ func _clear_hover() -> void:
 		_hover_marker.visible = false
 
 func _try_mouse_move() -> void:
+	if _use_networked_game:
+		return
 	if not _is_human_turn() or _is_human_moving:
 		return
 	if _hover_path.is_empty():

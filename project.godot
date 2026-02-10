@@ -13,3 +13,7 @@ config_version=5
 config/name="Isometric Hex Turn Game"
 run/main_scene="res://scenes/Game.tscn"
 config/features=PackedStringArray("4.6")
+
+[autoload]
+
+GameNetwork="*res://scripts/game_network.gd"

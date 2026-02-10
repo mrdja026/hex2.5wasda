@@ -21,7 +21,10 @@ var _health_bar: Node3D
 var _health_back: MeshInstance3D
 var _health_fill: MeshInstance3D
 var _health_label: Label3D
+var _turn_marker: Label3D
 var _is_targeted: bool = false
+var _has_npc_flag: bool = false
+var _is_npc: bool = false
 
 const BAR_WIDTH: float = 0.8
 const BAR_HEIGHT: float = 0.08
@@ -32,11 +35,22 @@ func _ready() -> void:
 	_apply_color()
 	_ensure_animations()
 	_ensure_health_bar()
+	_ensure_turn_marker()
 	_update_health_bar()
 	_play_idle()
 
 func set_axial_position(axial: Vector2i) -> void:
 	axial_position = axial
+
+func set_is_npc(value: bool) -> void:
+	_has_npc_flag = true
+	_is_npc = value
+	_apply_color()
+
+func set_is_current_turn(enabled: bool) -> void:
+	if _turn_marker == null:
+		return
+	_turn_marker.visible = enabled
 
 func apply_damage(amount: int) -> void:
 	if amount <= 0:
@@ -47,6 +61,12 @@ func apply_damage(amount: int) -> void:
 
 func heal_self() -> void:
 	health = min(health + heal_amount, max_health)
+	_update_health_bar()
+	emit_signal("health_changed", health, max_health)
+
+func set_health(current: int, maximum: int) -> void:
+	max_health = max(maximum, 1)
+	health = clamp(current, 0, max_health)
 	_update_health_bar()
 	emit_signal("health_changed", health, max_health)
 
@@ -69,10 +89,10 @@ func _apply_color() -> void:
 	if model == null:
 		return
 	_base_material = StandardMaterial3D.new()
-	if player_id == 1:
-		_base_material.albedo_color = Color(0.9, 0.2, 0.2)
+	if _has_npc_flag:
+		_base_material.albedo_color = Color(0.2, 0.45, 0.9) if _is_npc else Color(0.9, 0.2, 0.2)
 	else:
-		_base_material.albedo_color = Color(0.2, 0.45, 0.9)
+		_base_material.albedo_color = Color(0.9, 0.2, 0.2) if player_id == 1 else Color(0.2, 0.45, 0.9)
 	for mesh in _meshes:
 		mesh.material_override = _base_material
 	_apply_outline(_is_targeted)
@@ -128,6 +148,20 @@ func _ensure_health_bar() -> void:
 	_health_label.position = Vector3(0.0, 0.12, 0.02)
 	_health_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_health_bar.add_child(_health_label)
+
+func _ensure_turn_marker() -> void:
+	if has_node("TurnMarker"):
+		_turn_marker = get_node("TurnMarker") as Label3D
+		return
+	_turn_marker = Label3D.new()
+	_turn_marker.name = "TurnMarker"
+	_turn_marker.text = "*"
+	_turn_marker.font_size = 36
+	_turn_marker.position = health_bar_offset + Vector3(0.0, 0.35, 0.0)
+	_turn_marker.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_turn_marker.modulate = Color(1.0, 0.9, 0.2, 1.0)
+	_turn_marker.visible = false
+	add_child(_turn_marker)
 
 func _update_health_bar() -> void:
 	if _health_fill == null or _health_label == null:

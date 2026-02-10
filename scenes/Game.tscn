@@ -1,0 +1,61 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scripts/Game.gd" id=1]
+[ext_resource type="Script" path="res://scripts/HexTerrain.gd" id=2]
+[ext_resource type="Script" path="res://scripts/TurnManager.gd" id=3]
+[ext_resource type="Script" path="res://scripts/LightingRig.gd" id=4]
+
+[node name="Game" type="Node3D"]
+script = ExtResource(1)
+
+[node name="HexTerrain" type="Node3D" parent="."]
+script = ExtResource(2)
+
+[node name="PlayerContainer" type="Node3D" parent="."]
+
+[node name="Props" type="Node3D" parent="."]
+
+[node name="TurnManager" type="Node" parent="."]
+script = ExtResource(3)
+
+[node name="LightingRig" type="Node3D" parent="."]
+script = ExtResource(4)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="LightingRig"]
+
+[node name="OmniLight3D" type="OmniLight3D" parent="LightingRig"]
+
+[node name="Camera3D" type="Camera3D" parent="."]
+position = Vector3(0, 18, 18)
+rotation_degrees = Vector3(-35, 45, 0)
+projection = 1
+size = 24.0
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="DebugLabel" type="Label" parent="UI"]
+offset_left = 12.0
+offset_top = 12.0
+text = "Active Player: -"
+
+[node name="CombatLog" type="Label" parent="UI"]
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -420.0
+offset_top = -220.0
+offset_right = -12.0
+offset_bottom = -12.0
+autowrap_mode = 1
+text = "Combat Log:"
+
+[node name="ControlsLabel" type="Label" parent="UI"]
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = -180.0
+offset_right = 320.0
+offset_bottom = -12.0
+autowrap_mode = 1
+text = "Controls:"

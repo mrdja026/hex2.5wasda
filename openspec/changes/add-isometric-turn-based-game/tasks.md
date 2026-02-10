@@ -1,0 +1,13 @@
+## 1. Implementation
+- [ ] 1.1 Create base scenes: Game, HexTerrain, PlayerUnit, TurnManager
+- [ ] 1.2 Implement axial hex grid utilities and hex-distance checks
+- [ ] 1.3 Build hex tile rendering with isometric camera mapping
+- [ ] 1.4 Add ShaderMaterial for terrain and expose parameters
+- [ ] 1.5 Implement player registry with max-10 enforcement
+- [ ] 1.6 Add player state (position, health, max health)
+- [ ] 1.7 Implement round-robin turn order and active-player gating
+- [ ] 1.8 Add combat actions: adjacent attack and self-heal
+- [ ] 1.9 Hook attack action to an attack animation
+- [ ] 1.10 Add adjustable lighting nodes and runtime controls
+- [ ] 1.11 Add a minimal debug UI for current turn and actions
+- [ ] 1.12 Add basic validation tests or playtest checklist

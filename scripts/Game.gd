@@ -14,18 +14,27 @@ extends Node3D
 @export var camera_zoom_max: float = 40.0
 @export var tree_count: int = 10
 @export var rock_count: int = 8
+@export var buffer_tree_count: int = 18
+@export var buffer_rock_count: int = 12
 
 @onready var terrain: HexTerrain = $HexTerrain
 @onready var turn_manager: TurnManager = $TurnManager
+@onready var lighting_rig = $LightingRig
 @onready var player_container: Node3D = $PlayerContainer
 @onready var props_container: Node3D = $Props
-@onready var debug_label: Label = $UI/DebugLabel
-@onready var log_label: Label = $UI/CombatLog
-@onready var controls_label: Label = $UI/ControlsLabel
+@onready var turn_label: Label = $UI/TopLeftPanel/MarginContainer/TurnLabel
+@onready var combat_label: Label = $UI/TopRightPanel/MarginContainer/CombatLabel
+@onready var movement_label: Label = $UI/BottomLeftPanel/MarginContainer/MovementLabel
+@onready var system_label: Label = $UI/BottomRightPanel/MarginContainer/SystemLabel
+@onready var file_menu: MenuButton = $UI/MenuBar/MarginContainer/HBoxContainer/FileMenu
+@onready var debug_menu: MenuButton = $UI/MenuBar/MarginContainer/HBoxContainer/DebugMenu
 @onready var camera: Camera3D = $Camera3D
 
 var _players: Array[PlayerUnit] = []
 var _combat_log: Array[String] = []
+var _movement_log: Array[String] = []
+var _turn_log: Array[String] = []
+var _system_log: Array[String] = []
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _is_panning: bool = false
 var _blocked_axials: Dictionary = {}
@@ -38,6 +47,25 @@ var _hover_axial: Vector2i = Vector2i.ZERO
 var _hover_path: Array[Vector2i] = []
 var _hover_time: float = 0.0
 var _is_human_moving: bool = false
+var _sun_dragging: bool = false
+var _sun_azimuth: float = 45.0
+var _sun_elevation: float = 45.0
+var _sun_marker: MeshInstance3D
+var _camera_forward: Vector3 = Vector3.ZERO
+var _camera_focus_distance: float = 0.0
+var _tree_trunk_material: StandardMaterial3D
+var _tree_leaf_material: StandardMaterial3D
+var _rock_primary_material: StandardMaterial3D
+var _rock_secondary_material: StandardMaterial3D
+
+const BUFFER_PROP_MAX: int = 30
+var _light_palette_index: int = 0
+var _light_presets: Array = [
+	[Color(1.0, 0.98, 0.95), Color(0.9, 0.95, 1.0)],
+	[Color(0.95, 0.85, 0.75), Color(1.0, 0.8, 0.6)],
+	[Color(0.75, 0.85, 1.0), Color(0.7, 0.9, 1.0)],
+	[Color(0.85, 0.95, 0.9), Color(0.6, 0.8, 0.75)]
+]
 
 const MAX_LOG_LINES: int = 6
 const MOVE_DIRECTIONS: Array[Vector2i] = [
@@ -46,17 +74,48 @@ const MOVE_DIRECTIONS: Array[Vector2i] = [
 	Vector2i(-1, 0),
 	Vector2i(1, 0)
 ]
+const HEX_DIRECTIONS: Array[Vector2i] = [
+	Vector2i(1, 0),
+	Vector2i(1, -1),
+	Vector2i(0, -1),
+	Vector2i(-1, 0),
+	Vector2i(-1, 1),
+	Vector2i(0, 1)
+]
+const LIGHT_INTENSITY_STEP: float = 0.1
+const LIGHT_INTENSITY_MIN: float = 0.2
+const LIGHT_INTENSITY_MAX: float = 3.0
+const LIGHT_HEIGHT_STEP: float = 0.5
+const LIGHT_HEIGHT_MIN: float = 2.0
+const LIGHT_HEIGHT_MAX: float = 10.0
+const SUN_DRAG_SENSITIVITY: float = 0.2
+const SUN_AZIMUTH_MIN: float = -120.0
+const SUN_AZIMUTH_MAX: float = 120.0
+const SUN_ELEVATION_MIN: float = 12.0
+const SUN_ELEVATION_MAX: float = 65.0
+const SUN_MARKER_RADIUS: float = 14.0
+const SUN_MARKER_SIZE: float = 0.6
+const MENU_FILE_EXIT: int = 1
+const MENU_DEBUG_STUB: int = 1
 
 func _ready() -> void:
 	_rng.randomize()
 	_ensure_input_map()
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	_cache_camera_offset()
+	_create_sun_marker()
+	_init_sun_from_lighting()
+	_setup_menus()
+	_register_buffer_tiles()
 	_spawn_players()
 	_spawn_props()
 	turn_manager.active_player_changed.connect(_on_active_player_changed)
 	turn_manager.start_turns()
-	_update_debug_label()
-	_update_combat_log()
-	_update_controls_label()
+	_focus_camera_on_player(_get_player_by_id(1))
+	_update_turn_panel()
+	_update_combat_panel()
+	_update_movement_panel()
+	_update_system_panel()
 	_create_hover_marker()
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -67,6 +126,17 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_zoom_camera(camera_zoom_step)
 			return
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed and event.shift_pressed:
+				_sun_dragging = true
+				_set_sun_marker_visible(true)
+				_clear_hover()
+				return
+			if not event.pressed and _sun_dragging:
+				_sun_dragging = false
+				_set_sun_marker_visible(false)
+				_log_system("Sun drag: %0.1f/%0.1f" % [_sun_azimuth, _sun_elevation])
+				return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
 		_is_panning = event.pressed
 		return
@@ -76,8 +146,32 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and _is_panning:
 		_pan_camera(event.relative)
 		return
+	if event is InputEventMouseMotion and _sun_dragging:
+		_update_sun_drag(event.relative)
+		return
 	if event is InputEventMouseMotion:
 		_update_hover_from_mouse(event.position)
+		return
+	if event.is_action_pressed("light_dir_down"):
+		_adjust_directional_intensity(-LIGHT_INTENSITY_STEP)
+		return
+	if event.is_action_pressed("light_dir_up"):
+		_adjust_directional_intensity(LIGHT_INTENSITY_STEP)
+		return
+	if event.is_action_pressed("light_point_down"):
+		_adjust_point_intensity(-LIGHT_INTENSITY_STEP)
+		return
+	if event.is_action_pressed("light_point_up"):
+		_adjust_point_intensity(LIGHT_INTENSITY_STEP)
+		return
+	if event.is_action_pressed("light_point_lower"):
+		_adjust_point_height(-LIGHT_HEIGHT_STEP)
+		return
+	if event.is_action_pressed("light_point_raise"):
+		_adjust_point_height(LIGHT_HEIGHT_STEP)
+		return
+	if event.is_action_pressed("light_color_cycle"):
+		_cycle_light_colors()
 		return
 	if not _is_human_turn():
 		return
@@ -115,7 +209,8 @@ func _spawn_players() -> void:
 		var player: PlayerUnit = player_scene.instantiate() as PlayerUnit
 		player.player_id = i + 1
 		player.set_axial_position(spawn_positions[i])
-		player.position = terrain.axial_to_world(player.axial_position) + Vector3(0.0, 0.6, 0.0)
+		var height: float = terrain.get_tile_height(player.axial_position)
+		player.position = terrain.axial_to_world(player.axial_position, height) + Vector3(0.0, 0.6, 0.0)
 		if not turn_manager.register_player(player):
 			player.queue_free()
 			continue
@@ -126,27 +221,147 @@ func _spawn_players() -> void:
 func _spawn_props() -> void:
 	if props_container == null:
 		return
-	var available: Array[Vector2i] = terrain.get_all_axials()
-	available.shuffle()
-	var placed: int = 0
+	var available: Array[Vector2i] = terrain.get_play_axials()
+	var interior: Array[Vector2i] = []
+	var interior_radius: int = max(terrain.play_radius - 1, 1)
 	for axial in available:
+		if terrain.axial_distance(Vector2i.ZERO, axial) <= interior_radius:
+			interior.append(axial)
+	interior.shuffle()
+	var counts: Dictionary = {"trees": 0, "rocks": 0}
+	var total_props: int = tree_count + rock_count
+	var cluster_sizes: Array[int] = _build_cluster_sizes(total_props)
+	for cluster_size in cluster_sizes:
+		if interior.is_empty():
+			break
+		var center: Vector2i = interior.pop_back()
+		_place_prop_cluster(center, cluster_size, interior_radius, counts)
+	_spawn_buffer_props()
+
+func _spawn_buffer_props() -> void:
+	if props_container == null:
+		return
+	var buffer_axials: Array[Vector2i] = terrain.get_buffer_axials()
+	buffer_axials.shuffle()
+	var placed_trees: int = 0
+	var placed_rocks: int = 0
+	var total_allowed: int = min(buffer_tree_count + buffer_rock_count, BUFFER_PROP_MAX)
+	for axial in buffer_axials:
+		if _prop_labels.has(axial):
+			continue
+		if placed_trees + placed_rocks >= total_allowed:
+			break
+		if placed_trees < buffer_tree_count and placed_rocks < buffer_rock_count:
+			if _rng.randi_range(0, 1) == 0:
+				_place_buffer_prop(_create_tree(), axial, "Tree")
+				placed_trees += 1
+			else:
+				_place_buffer_prop(_create_rock(), axial, "Rock")
+				placed_rocks += 1
+			continue
+		if placed_trees < buffer_tree_count:
+			_place_buffer_prop(_create_tree(), axial, "Tree")
+			placed_trees += 1
+			continue
+		if placed_rocks < buffer_rock_count:
+			_place_buffer_prop(_create_rock(), axial, "Rock")
+			placed_rocks += 1
+		continue
+		break
+
+func _build_cluster_sizes(total: int) -> Array[int]:
+	var sizes: Array[int] = []
+	var remaining: int = total
+	while remaining > 0:
+		var size: int = 3 + _rng.randi_range(0, 2)
+		if remaining < 3:
+			size = remaining
+		if size > remaining:
+			size = remaining
+		sizes.append(size)
+		remaining -= size
+	return sizes
+
+func _place_prop_cluster(center: Vector2i, size: int, interior_radius: int, counts: Dictionary) -> void:
+	var candidates: Array[Vector2i] = _get_cluster_candidates(center)
+	candidates.shuffle()
+	var placed: int = 0
+	for axial in candidates:
+		if placed >= size:
+			break
+		if terrain.axial_distance(Vector2i.ZERO, axial) > interior_radius:
+			continue
 		if _is_blocked(axial, null):
 			continue
-		if placed < tree_count:
+		if counts["trees"] >= tree_count and counts["rocks"] >= rock_count:
+			break
+		var place_tree: bool = false
+		if counts["trees"] < tree_count and counts["rocks"] < rock_count:
+			place_tree = _rng.randi_range(0, 1) == 0
+		elif counts["trees"] < tree_count:
+			place_tree = true
+		else:
+			place_tree = false
+		if place_tree:
 			var tree: Node3D = _create_tree()
-			_place_prop(tree, axial)
-			_blocked_axials[axial] = true
+			_place_prop(tree, axial, true)
 			_prop_labels[axial] = "Tree"
-			placed += 1
-			continue
-		if placed < tree_count + rock_count:
+			counts["trees"] += 1
+		else:
 			var rock: Node3D = _create_rock()
-			_place_prop(rock, axial)
-			_blocked_axials[axial] = true
+			_place_prop(rock, axial, true)
 			_prop_labels[axial] = "Rock"
-			placed += 1
-			continue
-		break
+			counts["rocks"] += 1
+		_blocked_axials[axial] = true
+		placed += 1
+
+func _get_cluster_candidates(center: Vector2i) -> Array[Vector2i]:
+	var candidates: Array[Vector2i] = [center]
+	for direction in HEX_DIRECTIONS:
+		candidates.append(center + direction)
+	return candidates
+
+func _place_buffer_prop(prop: Node3D, axial: Vector2i, label: String) -> void:
+	if prop == null:
+		return
+	_place_prop(prop, axial, true)
+	_prop_labels[axial] = label
+
+func _register_buffer_tiles() -> void:
+	_blocked_axials.clear()
+	if terrain == null:
+		return
+	for axial in terrain.get_buffer_axials():
+		_blocked_axials[axial] = true
+
+func _cache_camera_offset() -> void:
+	if camera == null:
+		return
+	_camera_forward = -camera.global_transform.basis.z
+	if _camera_forward.length() > 0.0:
+		_camera_forward = _camera_forward.normalized()
+	_camera_focus_distance = (camera.global_position - _get_island_center()).dot(_camera_forward)
+
+func _get_island_center() -> Vector3:
+	if terrain == null:
+		return Vector3.ZERO
+	return terrain.axial_to_world(Vector2i.ZERO)
+
+func _focus_camera_on_player(player: PlayerUnit) -> void:
+	if camera == null:
+		return
+	var focus: Vector3 = _get_island_center()
+	if player != null:
+		focus = terrain.axial_to_world(player.axial_position)
+	if _camera_forward == Vector3.ZERO:
+		_cache_camera_offset()
+	camera.global_position = focus + _camera_forward * _camera_focus_distance
+
+func _get_player_by_id(player_id: int) -> PlayerUnit:
+	for player in _players:
+		if player.player_id == player_id:
+			return player
+	return null
 
 func _try_attack() -> void:
 	var attacker: PlayerUnit = turn_manager.get_active_player()
@@ -182,7 +397,7 @@ func _try_heal() -> void:
 
 func _end_human_turn() -> void:
 	turn_manager.end_turn()
-	_update_debug_label()
+	_update_turn_panel()
 	_clear_hover()
 
 func _find_adjacent_target(attacker: PlayerUnit) -> PlayerUnit:
@@ -213,7 +428,10 @@ func _is_blocked(axial: Vector2i, exclude: PlayerUnit) -> bool:
 	return _is_occupied(axial, exclude)
 
 func _on_active_player_changed(_player: PlayerUnit) -> void:
-	_update_debug_label()
+	if _player != null:
+		_log_turn("Active -> P%s" % _player.player_id)
+	else:
+		_log_turn("Active -> -")
 	if _player != null and not _is_human(_player):
 		_run_ai_turn(_player)
 	if _player != null and _is_human(_player):
@@ -221,11 +439,11 @@ func _on_active_player_changed(_player: PlayerUnit) -> void:
 	if _player == null or not _is_human(_player):
 		_clear_hover()
 
-func _update_debug_label() -> void:
-	if debug_label == null:
+func _update_turn_panel() -> void:
+	if turn_label == null:
 		return
 	var active: PlayerUnit = turn_manager.get_active_player()
-	var lines: Array[String] = []
+	var lines: Array[String] = ["Turn & Status"]
 	if active:
 		lines.append("Active Player: P%s" % active.player_id)
 		lines.append("Health: %s/%s" % [active.health, active.max_health])
@@ -237,21 +455,56 @@ func _update_debug_label() -> void:
 			lines.append("Target: -")
 	else:
 		lines.append("Active Player: -")
-	lines.append("Move: WASD | Actions: [J] Attack  [K] Heal")
 	lines.append("Players: %s" % turn_manager.player_count())
-	debug_label.text = "\n".join(lines)
+	lines.append("")
+	lines.append("Turn Log:")
+	if _turn_log.is_empty():
+		lines.append("No recent turns")
+	else:
+		lines.append_array(_turn_log)
+	turn_label.text = "\n".join(lines)
 
-func _update_combat_log() -> void:
-	if log_label == null:
+func _update_combat_panel() -> void:
+	if combat_label == null:
 		return
 	var lines: Array[String] = ["Combat Log:"]
-	lines.append_array(_combat_log)
-	log_label.text = "\n".join(lines)
+	if _combat_log.is_empty():
+		lines.append("No combat yet")
+	else:
+		lines.append_array(_combat_log)
+	combat_label.text = "\n".join(lines)
 
-func _update_controls_label() -> void:
-	if controls_label == null:
+func _update_movement_panel() -> void:
+	if movement_label == null:
 		return
-	var lines: Array[String] = []
+	var lines: Array[String] = ["Movement Log:"]
+	if _movement_log.is_empty():
+		lines.append("No movement yet")
+	else:
+		lines.append_array(_movement_log)
+	movement_label.text = "\n".join(lines)
+
+func _update_system_panel() -> void:
+	if system_label == null:
+		return
+	var lines: Array[String] = ["System & Lighting"]
+	if lighting_rig != null:
+		lines.append("Dir Intensity: %0.2f" % lighting_rig.directional_intensity)
+		lines.append("Dir Rot: %s" % _format_vector3(lighting_rig.directional_rotation_degrees))
+		lines.append("Dir Color: %s" % _format_color(lighting_rig.directional_color))
+		lines.append("Point Intensity: %0.2f" % lighting_rig.point_intensity)
+		lines.append("Point Pos: %s" % _format_vector3(lighting_rig.point_position))
+		lines.append("Point Color: %s" % _format_color(lighting_rig.point_color))
+		lines.append("Sun Azimuth: %0.1f  Elevation: %0.1f" % [_sun_azimuth, _sun_elevation])
+	else:
+		lines.append("Lighting: -")
+	lines.append("")
+	lines.append("System Log:")
+	if _system_log.is_empty():
+		lines.append("No system events")
+	else:
+		lines.append_array(_system_log)
+	lines.append("")
 	lines.append("Controls:")
 	lines.append("WASD: Move")
 	lines.append("J: Attack  K: Heal")
@@ -260,7 +513,36 @@ func _update_controls_label() -> void:
 	lines.append("LMB: Move")
 	lines.append("RMB Drag: Pan")
 	lines.append("Wheel: Zoom")
-	controls_label.text = "\n".join(lines)
+	lines.append("Z/X: Dir Intensity")
+	lines.append("C/V: Point Intensity")
+	lines.append("B/N: Point Height")
+	lines.append("M: Cycle Colors")
+	lines.append("Shift + LMB: Drag Sun")
+	system_label.text = "\n".join(lines)
+
+func _setup_menus() -> void:
+	if file_menu != null:
+		var file_popup: PopupMenu = file_menu.get_popup()
+		file_popup.clear()
+		file_popup.add_item("Exit", MENU_FILE_EXIT)
+		var file_handler: Callable = Callable(self, "_on_file_menu_id_pressed")
+		if not file_popup.id_pressed.is_connected(file_handler):
+			file_popup.id_pressed.connect(file_handler)
+	if debug_menu != null:
+		var debug_popup: PopupMenu = debug_menu.get_popup()
+		debug_popup.clear()
+		debug_popup.add_item("Debug", MENU_DEBUG_STUB)
+		var debug_handler: Callable = Callable(self, "_on_debug_menu_id_pressed")
+		if not debug_popup.id_pressed.is_connected(debug_handler):
+			debug_popup.id_pressed.connect(debug_handler)
+
+func _on_file_menu_id_pressed(id: int) -> void:
+	if id == MENU_FILE_EXIT:
+		get_tree().quit()
+
+func _on_debug_menu_id_pressed(id: int) -> void:
+	if id == MENU_DEBUG_STUB:
+		_log_system("Debug: stub")
 
 func _ensure_input_map() -> void:
 	_ensure_action("move_up", KEY_W)
@@ -271,6 +553,13 @@ func _ensure_input_map() -> void:
 	_ensure_action("action_heal", KEY_K)
 	_ensure_action("target_next", KEY_TAB)
 	_ensure_action("action_end_turn", KEY_SPACE)
+	_ensure_action("light_dir_down", KEY_Z)
+	_ensure_action("light_dir_up", KEY_X)
+	_ensure_action("light_point_down", KEY_C)
+	_ensure_action("light_point_up", KEY_V)
+	_ensure_action("light_point_lower", KEY_B)
+	_ensure_action("light_point_raise", KEY_N)
+	_ensure_action("light_color_cycle", KEY_M)
 
 func _ensure_action(action_name: String, keycode: Key) -> void:
 	if not InputMap.has_action(action_name):
@@ -283,10 +572,105 @@ func _ensure_action(action_name: String, keycode: Key) -> void:
 	key_event.keycode = keycode
 	InputMap.action_add_event(action_name, key_event)
 
+func _adjust_directional_intensity(delta: float) -> void:
+	if lighting_rig == null:
+		return
+	lighting_rig.directional_intensity = clamp(lighting_rig.directional_intensity + delta, LIGHT_INTENSITY_MIN, LIGHT_INTENSITY_MAX)
+	lighting_rig.apply_lighting()
+	_log_system("Dir intensity: %0.2f" % lighting_rig.directional_intensity)
+
+func _adjust_point_intensity(delta: float) -> void:
+	if lighting_rig == null:
+		return
+	lighting_rig.point_intensity = clamp(lighting_rig.point_intensity + delta, LIGHT_INTENSITY_MIN, LIGHT_INTENSITY_MAX)
+	lighting_rig.apply_lighting()
+	_log_system("Point intensity: %0.2f" % lighting_rig.point_intensity)
+
+func _adjust_point_height(delta: float) -> void:
+	if lighting_rig == null:
+		return
+	var position: Vector3 = lighting_rig.point_position
+	position.y = clamp(position.y + delta, LIGHT_HEIGHT_MIN, LIGHT_HEIGHT_MAX)
+	lighting_rig.point_position = position
+	lighting_rig.apply_lighting()
+	_log_system("Point height: %0.1f" % lighting_rig.point_position.y)
+
+func _cycle_light_colors() -> void:
+	if lighting_rig == null:
+		return
+	if _light_presets.is_empty():
+		return
+	_light_palette_index = (_light_palette_index + 1) % _light_presets.size()
+	var preset: Array = _light_presets[_light_palette_index]
+	if preset.size() < 2:
+		return
+	lighting_rig.directional_color = preset[0]
+	lighting_rig.point_color = preset[1]
+	lighting_rig.apply_lighting()
+	_log_system("Lighting palette: %s" % (_light_palette_index + 1))
+
+func _init_sun_from_lighting() -> void:
+	if lighting_rig == null:
+		return
+	_sun_azimuth = clamp(lighting_rig.directional_rotation_degrees.y, SUN_AZIMUTH_MIN, SUN_AZIMUTH_MAX)
+	var t: float = (_sun_azimuth - SUN_AZIMUTH_MIN) / (SUN_AZIMUTH_MAX - SUN_AZIMUTH_MIN)
+	var arc: float = sin(t * PI)
+	_sun_elevation = lerp(SUN_ELEVATION_MIN, SUN_ELEVATION_MAX, arc)
+	_apply_sun_rotation()
+
+func _update_sun_drag(delta: Vector2) -> void:
+	_sun_azimuth = clamp(_sun_azimuth + delta.x * SUN_DRAG_SENSITIVITY, SUN_AZIMUTH_MIN, SUN_AZIMUTH_MAX)
+	var t: float = (_sun_azimuth - SUN_AZIMUTH_MIN) / (SUN_AZIMUTH_MAX - SUN_AZIMUTH_MIN)
+	var arc: float = sin(t * PI)
+	_sun_elevation = lerp(SUN_ELEVATION_MIN, SUN_ELEVATION_MAX, arc)
+	_apply_sun_rotation()
+
+func _apply_sun_rotation() -> void:
+	if lighting_rig == null:
+		return
+	lighting_rig.directional_rotation_degrees = Vector3(-_sun_elevation, _sun_azimuth, 0.0)
+	lighting_rig.apply_lighting()
+	_update_sun_marker()
+	_update_system_panel()
+
+func _create_sun_marker() -> void:
+	var mesh: SphereMesh = SphereMesh.new()
+	mesh.radius = SUN_MARKER_SIZE * 0.5
+	mesh.height = SUN_MARKER_SIZE
+	_sun_marker = MeshInstance3D.new()
+	_sun_marker.mesh = mesh
+	var material: StandardMaterial3D = StandardMaterial3D.new()
+	material.albedo_color = Color(1.0, 0.88, 0.5)
+	material.emission_enabled = true
+	material.emission = Color(1.0, 0.85, 0.4)
+	material.emission_energy = 2.0
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_sun_marker.material_override = material
+	_sun_marker.visible = false
+	add_child(_sun_marker)
+
+func _set_sun_marker_visible(visible: bool) -> void:
+	if _sun_marker == null:
+		return
+	_sun_marker.visible = visible
+	if visible:
+		_update_sun_marker()
+
+func _update_sun_marker() -> void:
+	if _sun_marker == null:
+		return
+	var direction: Vector3 = _get_sun_direction()
+	_sun_marker.position = -direction * SUN_MARKER_RADIUS
+
+func _get_sun_direction() -> Vector3:
+	var euler: Vector3 = Vector3(deg_to_rad(-_sun_elevation), deg_to_rad(_sun_azimuth), 0.0)
+	var basis: Basis = Basis.from_euler(euler)
+	return -basis.z
+
 func _attempt_move(player: PlayerUnit, direction: Vector2i) -> bool:
 	var from_world: Vector3 = player.global_position
 	var target_axial: Vector2i = player.axial_position + direction
-	if not terrain.is_within_bounds(target_axial):
+	if not terrain.is_within_play_area(target_axial):
 		return false
 	if _is_blocked(target_axial, player):
 		return false
@@ -300,36 +684,51 @@ func _attempt_move(player: PlayerUnit, direction: Vector2i) -> bool:
 	var to_world: Vector3 = player.global_position
 	var near_list: Array[String] = _get_adjacent_entity_names(player.axial_position, player)
 	var near_text: String = "None" if near_list.is_empty() else ", ".join(near_list)
-	_log_event("P%s moved %s -> %s. Near: [%s]" % [player.player_id, _format_world(from_world), _format_world(to_world), near_text])
+	_log_movement("P%s moved %s -> %s. Near: [%s]" % [player.player_id, _format_world(from_world), _format_world(to_world), near_text])
 	if _is_human(player):
 		_auto_select_target(player)
-	_update_debug_label()
+	_update_turn_panel()
 	return true
 
 func _perform_attack(attacker: PlayerUnit, target: PlayerUnit) -> void:
 	attacker.play_attack()
 	target.apply_damage(attacker.attack_damage)
-	_log_event("P%s attacked P%s for %s. P%s HP: %s/%s" % [attacker.player_id, target.player_id, attacker.attack_damage, target.player_id, target.health, target.max_health])
+	_log_combat("P%s attacked P%s for %s. P%s HP: %s/%s" % [attacker.player_id, target.player_id, attacker.attack_damage, target.player_id, target.health, target.max_health])
 	if not target.is_alive():
 		_handle_death(target)
 	turn_manager.end_turn()
-	_update_debug_label()
+	_update_turn_panel()
 
 func _perform_heal(player: PlayerUnit) -> void:
 	var before: int = player.health
 	player.heal_self()
 	var delta: int = player.health - before
-	_log_event("P%s healed %s. HP: %s/%s" % [player.player_id, delta, player.health, player.max_health])
+	_log_combat("P%s healed %s. HP: %s/%s" % [player.player_id, delta, player.health, player.max_health])
 	turn_manager.end_turn()
-	_update_debug_label()
+	_update_turn_panel()
 
-func _log_event(text: String) -> void:
+func _append_log(log: Array[String], text: String) -> void:
 	if text.is_empty():
 		return
-	_combat_log.append(text)
-	while _combat_log.size() > MAX_LOG_LINES:
-		_combat_log.pop_front()
-	_update_combat_log()
+	log.append(text)
+	while log.size() > MAX_LOG_LINES:
+		log.pop_front()
+
+func _log_combat(text: String) -> void:
+	_append_log(_combat_log, text)
+	_update_combat_panel()
+
+func _log_movement(text: String) -> void:
+	_append_log(_movement_log, text)
+	_update_movement_panel()
+
+func _log_turn(text: String) -> void:
+	_append_log(_turn_log, text)
+	_update_turn_panel()
+
+func _log_system(text: String) -> void:
+	_append_log(_system_log, text)
+	_update_system_panel()
 
 func _is_human(player: PlayerUnit) -> bool:
 	return player != null and player.player_id == 1
@@ -392,7 +791,7 @@ func _set_target(target: PlayerUnit) -> void:
 	_current_target = target
 	if _current_target != null:
 		_current_target.set_targeted(true)
-	_update_debug_label()
+	_update_turn_panel()
 
 func _get_adjacent_entity_names(origin: Vector2i, exclude: PlayerUnit) -> Array[String]:
 	var names: Array[String] = []
@@ -414,6 +813,12 @@ func _get_adjacent_entity_names(origin: Vector2i, exclude: PlayerUnit) -> Array[
 
 func _format_world(position: Vector3) -> String:
 	return "(%.1f, %.1f, %.1f)" % [position.x, position.y, position.z]
+
+func _format_vector3(value: Vector3) -> String:
+	return "(%.1f, %.1f, %.1f)" % [value.x, value.y, value.z]
+
+func _format_color(color: Color) -> String:
+	return "(%.2f, %.2f, %.2f)" % [color.r, color.g, color.b]
 
 func _run_ai_turn(player: PlayerUnit) -> void:
 	await get_tree().create_timer(ai_action_delay).timeout
@@ -466,7 +871,7 @@ func _pan_camera(delta: Vector2) -> void:
 		right = right.normalized()
 	if forward.length() > 0.0:
 		forward = forward.normalized()
-	var move: Vector3 = (right * -delta.x + forward * -delta.y) * camera_pan_speed
+	var move: Vector3 = (right * delta.x + forward * delta.y) * camera_pan_speed
 	camera.global_position += move
 
 func _zoom_camera(delta: float) -> void:
@@ -514,7 +919,7 @@ func _update_hover_from_mouse(screen_pos: Vector2) -> void:
 		return
 	var world: Vector3 = origin + direction * t
 	var axial: Vector2i = terrain.world_to_axial(world)
-	if not terrain.is_within_bounds(axial):
+	if not terrain.is_within_play_area(axial):
 		_clear_hover()
 		return
 	var path: Array[Vector2i] = _compute_path(player, axial)
@@ -554,7 +959,7 @@ func _execute_mouse_path(player: PlayerUnit, path: Array[Vector2i]) -> void:
 	_is_human_moving = true
 	await _move_path_steps(player, path)
 	_is_human_moving = false
-	_update_debug_label()
+	_update_turn_panel()
 
 func _move_path_steps(player: PlayerUnit, path: Array[Vector2i]) -> void:
 	for step in path:
@@ -567,7 +972,7 @@ func _move_path_steps(player: PlayerUnit, path: Array[Vector2i]) -> void:
 			break
 
 func _move_step_animated(player: PlayerUnit, target_axial: Vector2i) -> bool:
-	if not terrain.is_within_bounds(target_axial):
+	if not terrain.is_within_play_area(target_axial):
 		return false
 	if _is_blocked(target_axial, player):
 		return false
@@ -584,10 +989,10 @@ func _move_step_animated(player: PlayerUnit, target_axial: Vector2i) -> bool:
 	await tween.finished
 	var near_list: Array[String] = _get_adjacent_entity_names(player.axial_position, player)
 	var near_text: String = "None" if near_list.is_empty() else ", ".join(near_list)
-	_log_event("P%s moved %s -> %s. Near: [%s]" % [player.player_id, _format_world(from_world), _format_world(target_world), near_text])
+	_log_movement("P%s moved %s -> %s. Near: [%s]" % [player.player_id, _format_world(from_world), _format_world(target_world), near_text])
 	if _is_human(player):
 		_auto_select_target(player)
-	_update_debug_label()
+	_update_turn_panel()
 	return true
 
 func _compute_path(player: PlayerUnit, target_axial: Vector2i) -> Array[Vector2i]:
@@ -624,7 +1029,7 @@ func _choose_step_towards(start_axial: Vector2i, target_axial: Vector2i, player:
 	var target_dir: Vector3 = (target_world - start_world).normalized()
 	for direction in [Vector2i(1, 0), Vector2i(1, -1), Vector2i(0, -1), Vector2i(-1, 0), Vector2i(-1, 1), Vector2i(0, 1)]:
 		var candidate: Vector2i = start_axial + direction
-		if not terrain.is_within_bounds(candidate):
+		if not terrain.is_within_play_area(candidate):
 			continue
 		if _is_blocked(candidate, player):
 			continue
@@ -647,107 +1052,121 @@ func _process(delta: float) -> void:
 
 func _create_tree() -> Node3D:
 	var tree: Node3D = Node3D.new()
+	var trunk_material: StandardMaterial3D = _get_tree_trunk_material()
+	var leaf_material: StandardMaterial3D = _get_tree_leaf_material()
 	var trunk_mesh: CylinderMesh = CylinderMesh.new()
-	trunk_mesh.top_radius = 0.15
-	trunk_mesh.bottom_radius = 0.2
+	trunk_mesh.top_radius = 0.12
+	trunk_mesh.bottom_radius = 0.18
 	trunk_mesh.height = 1.0
+	trunk_mesh.radial_segments = 6
 	var trunk: MeshInstance3D = MeshInstance3D.new()
 	trunk.mesh = trunk_mesh
-	var trunk_material: StandardMaterial3D = StandardMaterial3D.new()
-	trunk_material.albedo_color = Color(0.35, 0.22, 0.12)
 	trunk.material_override = trunk_material
 	trunk.position = Vector3(0, 0.5, 0)
-	var trunk_top: MeshInstance3D = MeshInstance3D.new()
-	var trunk_top_mesh: CylinderMesh = CylinderMesh.new()
-	trunk_top_mesh.top_radius = 0.08
-	trunk_top_mesh.bottom_radius = 0.15
-	trunk_top_mesh.height = 0.5
-	trunk_top.mesh = trunk_top_mesh
-	trunk_top.material_override = trunk_material
-	trunk_top.position = Vector3(0, 1.1, 0)
-	var canopy_mesh: SphereMesh = SphereMesh.new()
-	canopy_mesh.radius = 0.55
-	var canopy: MeshInstance3D = MeshInstance3D.new()
-	canopy.mesh = canopy_mesh
-	var canopy_material: StandardMaterial3D = StandardMaterial3D.new()
-	canopy_material.albedo_color = Color(0.15, 0.4, 0.2)
-	canopy.material_override = canopy_material
-	canopy.position = Vector3(0, 1.2, 0)
-	var canopy_mid: MeshInstance3D = MeshInstance3D.new()
-	var canopy_mid_mesh: SphereMesh = SphereMesh.new()
-	canopy_mid_mesh.radius = 0.4
-	canopy_mid.mesh = canopy_mid_mesh
-	canopy_mid.material_override = canopy_material
-	canopy_mid.position = Vector3(0.3, 1.1, 0.2)
-	var branch_mesh: CapsuleMesh = CapsuleMesh.new()
-	branch_mesh.radius = 0.05
-	branch_mesh.height = 0.5
-	var branch_l: MeshInstance3D = MeshInstance3D.new()
-	branch_l.mesh = branch_mesh
-	branch_l.material_override = trunk_material
-	branch_l.position = Vector3(-0.35, 0.9, 0)
-	branch_l.rotation_degrees = Vector3(0, 0, 45)
-	var branch_r: MeshInstance3D = MeshInstance3D.new()
-	branch_r.mesh = branch_mesh
-	branch_r.material_override = trunk_material
-	branch_r.position = Vector3(0.35, 0.95, 0.1)
-	branch_r.rotation_degrees = Vector3(0, 0, -45)
 	tree.add_child(trunk)
-	tree.add_child(trunk_top)
-	tree.add_child(branch_l)
-	tree.add_child(branch_r)
-	tree.add_child(canopy)
-	tree.add_child(canopy_mid)
+	var tier_count: int = 4 + _rng.randi_range(0, 3)
+	for i in range(tier_count):
+		var tier_mesh: CylinderMesh = CylinderMesh.new()
+		var tier_height: float = 0.18 + float(i) * 0.02
+		var tier_radius: float = 0.55 - float(i) * 0.07
+		tier_mesh.height = tier_height
+		tier_mesh.top_radius = tier_radius * 0.18
+		tier_mesh.bottom_radius = tier_radius
+		tier_mesh.radial_segments = 6
+		var tier: MeshInstance3D = MeshInstance3D.new()
+		tier.mesh = tier_mesh
+		tier.material_override = leaf_material
+		tier.position = Vector3(0.0, 0.9 + float(i) * 0.18, 0.0)
+		tier.rotation.y = deg_to_rad(_rng.randi_range(0, 359))
+		tree.add_child(tier)
+	for i in range(2):
+		var knot_mesh: CylinderMesh = CylinderMesh.new()
+		knot_mesh.top_radius = 0.04
+		knot_mesh.bottom_radius = 0.06
+		knot_mesh.height = 0.12
+		knot_mesh.radial_segments = 6
+		var knot: MeshInstance3D = MeshInstance3D.new()
+		knot.mesh = knot_mesh
+		knot.material_override = trunk_material
+		var angle: float = deg_to_rad(_rng.randi_range(0, 359))
+		var radius: float = 0.16
+		knot.position = Vector3(cos(angle) * radius, 0.4 + 0.2 * float(i), sin(angle) * radius)
+		tree.add_child(knot)
 	return tree
 
 func _create_rock() -> Node3D:
 	var rock: Node3D = Node3D.new()
-	var mesh: SphereMesh = SphereMesh.new()
-	mesh.radius = 0.45
-	var instance: MeshInstance3D = MeshInstance3D.new()
-	instance.mesh = mesh
-	var material: StandardMaterial3D = StandardMaterial3D.new()
-	material.albedo_color = Color(0.35, 0.35, 0.38)
-	instance.material_override = material
-	instance.scale = Vector3(1.2, 0.8, 1.0)
-	instance.position = Vector3(0, 0.2, 0)
-	var shard_mesh: SphereMesh = SphereMesh.new()
-	shard_mesh.radius = 0.25
-	var shard_a: MeshInstance3D = MeshInstance3D.new()
-	shard_a.mesh = shard_mesh
-	shard_a.material_override = material
-	shard_a.position = Vector3(0.35, 0.25, -0.1)
-	var shard_b: MeshInstance3D = MeshInstance3D.new()
-	shard_b.mesh = shard_mesh
-	shard_b.material_override = material
-	shard_b.position = Vector3(-0.25, 0.18, 0.25)
-	shard_b.scale = Vector3(0.8, 0.6, 0.7)
-	var flat_mesh: BoxMesh = BoxMesh.new()
-	flat_mesh.size = Vector3(0.5, 0.2, 0.4)
-	var flat: MeshInstance3D = MeshInstance3D.new()
-	flat.mesh = flat_mesh
-	flat.material_override = material
-	flat.position = Vector3(0.0, 0.1, -0.35)
-	flat.rotation_degrees = Vector3(10.0, 20.0, 0.0)
-	rock.add_child(instance)
-	rock.add_child(shard_a)
-	rock.add_child(shard_b)
-	rock.add_child(flat)
+	var primary: StandardMaterial3D = _get_rock_primary_material()
+	var secondary: StandardMaterial3D = _get_rock_secondary_material()
+	var shard_count: int = 2 + _rng.randi_range(0, 4)
+	for i in range(shard_count):
+		var shard_mesh: CylinderMesh = CylinderMesh.new()
+		var height: float = 0.45 + _rng.randf_range(0.0, 0.45)
+		var radius: float = 0.18 + _rng.randf_range(0.0, 0.12)
+		shard_mesh.top_radius = radius * 0.1
+		shard_mesh.bottom_radius = radius
+		shard_mesh.height = height
+		shard_mesh.radial_segments = 6
+		var shard: MeshInstance3D = MeshInstance3D.new()
+		shard.mesh = shard_mesh
+		shard.material_override = secondary if _rng.randi_range(0, 4) == 0 else primary
+		shard.position = Vector3(
+			_rng.randf_range(-0.25, 0.25),
+			height * 0.5,
+			_rng.randf_range(-0.25, 0.25)
+		)
+		shard.rotation_degrees = Vector3(
+			_rng.randf_range(-12.0, 12.0),
+			_rng.randf_range(0.0, 360.0),
+			_rng.randf_range(-12.0, 12.0)
+		)
+		rock.add_child(shard)
 	return rock
 
-func _place_prop(prop: Node3D, axial: Vector2i) -> void:
+func _get_tree_trunk_material() -> StandardMaterial3D:
+	if _tree_trunk_material == null:
+		_tree_trunk_material = StandardMaterial3D.new()
+		_tree_trunk_material.albedo_color = Color(0.35, 0.22, 0.12)
+	return _tree_trunk_material
+
+func _get_tree_leaf_material() -> StandardMaterial3D:
+	if _tree_leaf_material == null:
+		_tree_leaf_material = StandardMaterial3D.new()
+		_tree_leaf_material.albedo_color = Color(0.14, 0.36, 0.2)
+	return _tree_leaf_material
+
+func _get_rock_primary_material() -> StandardMaterial3D:
+	if _rock_primary_material == null:
+		_rock_primary_material = StandardMaterial3D.new()
+		_rock_primary_material.albedo_color = Color(0.36, 0.33, 0.3)
+		_rock_primary_material.roughness = 0.95
+	return _rock_primary_material
+
+func _get_rock_secondary_material() -> StandardMaterial3D:
+	if _rock_secondary_material == null:
+		_rock_secondary_material = StandardMaterial3D.new()
+		_rock_secondary_material.albedo_color = Color(0.28, 0.25, 0.22)
+		_rock_secondary_material.roughness = 0.98
+	return _rock_secondary_material
+
+func _place_prop(prop: Node3D, axial: Vector2i, randomize: bool) -> void:
 	if prop == null:
 		return
 	props_container.add_child(prop)
-	prop.position = terrain.axial_to_world(axial)
-	prop.rotation.y = deg_to_rad(_rng.randi_range(0, 359))
-	var scale: float = _rng.randf_range(0.85, 1.15)
-	prop.scale = Vector3.ONE * scale
+	var height: float = terrain.get_tile_height(axial)
+	prop.position = terrain.axial_to_world(axial, height)
+	if randomize:
+		prop.rotation.y = deg_to_rad(_rng.randi_range(0, 359))
+		var scale: float = _rng.randf_range(0.85, 1.15)
+		prop.scale = Vector3.ONE * scale
+	else:
+		prop.rotation = Vector3.ZERO
+		prop.scale = Vector3.ONE
 
 func _handle_death(player: PlayerUnit) -> void:
 	if player == null:
 		return
-	_log_event("P%s was defeated" % player.player_id)
+	_log_combat("P%s was defeated" % player.player_id)
 	_spawn_death_effect(player.global_position)
 	turn_manager.remove_player(player)
 	_blocked_axials.erase(player.axial_position)

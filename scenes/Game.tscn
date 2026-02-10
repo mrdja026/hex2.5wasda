@@ -5,6 +5,21 @@
 [ext_resource type="Script" path="res://scripts/TurnManager.gd" id=3]
 [ext_resource type="Script" path="res://scripts/LightingRig.gd" id=4]
 
+[sub_resource type="StyleBoxFlat" id=1]
+bg_color = Color(0.92, 0.86, 0.72, 0.9)
+border_color = Color(0.55, 0.44, 0.28, 0.9)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+corner_radius_top_left = 6
+corner_radius_top_right = 6
+corner_radius_bottom_left = 6
+corner_radius_bottom_right = 6
+shadow_color = Color(0, 0, 0, 0.2)
+shadow_size = 8
+shadow_offset = Vector2(2, 2)
+
 [node name="Game" type="Node3D"]
 script = ExtResource(1)
 
@@ -33,29 +48,126 @@ size = 24.0
 
 [node name="UI" type="CanvasLayer" parent="."]
 
-[node name="DebugLabel" type="Label" parent="UI"]
-offset_left = 12.0
-offset_top = 12.0
-text = "Active Player: -"
+[node name="MenuBar" type="PanelContainer" parent="UI"]
+anchor_left = 0.0
+anchor_right = 1.0
+offset_left = 0.0
+offset_top = 0.0
+offset_right = 0.0
+offset_bottom = 36.0
+theme_override_styles/panel = SubResource(1)
 
-[node name="CombatLog" type="Label" parent="UI"]
+[node name="MarginContainer" type="MarginContainer" parent="UI/MenuBar"]
+offset_right = 1152.0
+offset_bottom = 36.0
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_bottom = 6
+
+[node name="HBoxContainer" type="HBoxContainer" parent="UI/MenuBar/MarginContainer"]
+offset_right = 1132.0
+offset_bottom = 24.0
+theme_override_constants/separation = 12
+
+[node name="FileMenu" type="MenuButton" parent="UI/MenuBar/MarginContainer/HBoxContainer"]
+text = "File"
+
+[node name="DebugMenu" type="MenuButton" parent="UI/MenuBar/MarginContainer/HBoxContainer"]
+text = "Debug"
+
+[node name="TopLeftPanel" type="PanelContainer" parent="UI"]
+offset_left = 12.0
+offset_top = 48.0
+offset_right = 380.0
+offset_bottom = 356.0
+theme_override_styles/panel = SubResource(1)
+
+[node name="MarginContainer" type="MarginContainer" parent="UI/TopLeftPanel"]
+offset_right = 368.0
+offset_bottom = 308.0
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_bottom = 8
+
+[node name="TurnLabel" type="Label" parent="UI/TopLeftPanel/MarginContainer"]
+offset_right = 348.0
+offset_bottom = 292.0
+autowrap_mode = 1
+theme_override_colors/font_color = Color(0.18, 0.13, 0.07, 1)
+text = "Turn & Status"
+
+[node name="TopRightPanel" type="PanelContainer" parent="UI"]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -380.0
+offset_top = 48.0
+offset_right = -12.0
+offset_bottom = 356.0
+theme_override_styles/panel = SubResource(1)
+
+[node name="MarginContainer" type="MarginContainer" parent="UI/TopRightPanel"]
+offset_right = 368.0
+offset_bottom = 308.0
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_bottom = 8
+
+[node name="CombatLabel" type="Label" parent="UI/TopRightPanel/MarginContainer"]
+offset_right = 348.0
+offset_bottom = 292.0
+autowrap_mode = 1
+theme_override_colors/font_color = Color(0.18, 0.13, 0.07, 1)
+text = "Combat Log"
+
+[node name="BottomLeftPanel" type="PanelContainer" parent="UI"]
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = -300.0
+offset_right = 380.0
+offset_bottom = -12.0
+theme_override_styles/panel = SubResource(1)
+
+[node name="MarginContainer" type="MarginContainer" parent="UI/BottomLeftPanel"]
+offset_right = 368.0
+offset_bottom = 288.0
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_bottom = 8
+
+[node name="MovementLabel" type="Label" parent="UI/BottomLeftPanel/MarginContainer"]
+offset_right = 348.0
+offset_bottom = 272.0
+autowrap_mode = 1
+theme_override_colors/font_color = Color(0.18, 0.13, 0.07, 1)
+text = "Movement Log"
+
+[node name="BottomRightPanel" type="PanelContainer" parent="UI"]
 anchor_left = 1.0
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = -420.0
-offset_top = -220.0
+offset_left = -380.0
+offset_top = -300.0
 offset_right = -12.0
 offset_bottom = -12.0
-autowrap_mode = 1
-text = "Combat Log:"
+theme_override_styles/panel = SubResource(1)
 
-[node name="ControlsLabel" type="Label" parent="UI"]
-anchor_top = 1.0
-anchor_bottom = 1.0
-offset_left = 12.0
-offset_top = -180.0
-offset_right = 320.0
-offset_bottom = -12.0
+[node name="MarginContainer" type="MarginContainer" parent="UI/BottomRightPanel"]
+offset_right = 368.0
+offset_bottom = 288.0
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_bottom = 8
+
+[node name="SystemLabel" type="Label" parent="UI/BottomRightPanel/MarginContainer"]
+offset_right = 348.0
+offset_bottom = 272.0
 autowrap_mode = 1
-text = "Controls:"
+theme_override_colors/font_color = Color(0.18, 0.13, 0.07, 1)
+text = "System & Lighting"

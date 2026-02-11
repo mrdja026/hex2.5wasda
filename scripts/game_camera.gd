@@ -1,4 +1,5 @@
 ## Manages the camera's movement, zooming, and positioning.
+# class_name GameCamera
 extends Node
 
 var camera: Camera3D

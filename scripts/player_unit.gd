@@ -1,4 +1,5 @@
 ## Represents a unit in the game, managing its health, model, and animations.
+# class_name PlayerUnit
 extends Node3D
 
 signal health_changed(current: int, maximum: int)

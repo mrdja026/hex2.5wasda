@@ -1,5 +1,5 @@
 ## Manages the network connection to the game backend.
-class_name GameNetworkClient
+# class_name GameNetworkClient
 extends Node
 
 signal snapshot_received(snapshot: Dictionary)
@@ -17,9 +17,9 @@ var auth_cookie: String = ""
 var channel_id: int = -1
 var username: String = ""
 
-@onready var _http := HTTPRequest.new()
-@onready var _command_http := HTTPRequest.new()
-@onready var _poll_http := HTTPRequest.new()
+@onready var _http: HTTPRequest = HTTPRequest.new()
+@onready var _command_http: HTTPRequest = HTTPRequest.new()
+@onready var _poll_http: HTTPRequest = HTTPRequest.new()
 
 var _command_queue: Array = []
 var _command_inflight: bool = false
@@ -168,7 +168,7 @@ func _process_command_queue() -> void:
 	if _command_queue.is_empty():
 		return
 	_command_inflight = true
-	var item := _command_queue.pop_front() as Dictionary
+	var item: Dictionary = _command_queue.pop_front() as Dictionary
 	await _send_command(item)
 	_command_inflight = false
 	await _process_command_queue()
@@ -190,7 +190,7 @@ func _send_command(item: Dictionary) -> void:
 	var error_text: String = "Command failed"
 	var response_data: Variant = response.get("data")
 	if typeof(response_data) == TYPE_DICTIONARY:
-		var response_dict := response_data as Dictionary
+		var response_dict: Dictionary = response_data as Dictionary
 		if response_dict.has("error"):
 			error_text = str(response_dict.get("error"))
 	status_received.emit("%s status=%s" % [error_text, status])

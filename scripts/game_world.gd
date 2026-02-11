@@ -1,4 +1,5 @@
 ## Manages the physical game world, including props, terrain blocking, and effects.
+# class_name GameWorld
 extends Node3D
 
 @onready var _rng: RandomNumberGenerator = RandomNumberGenerator.new()

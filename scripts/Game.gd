@@ -66,7 +66,7 @@ func _ready() -> void:
 	_setup_network_state()
 	
 	if turn_manager and turn_manager.has_signal("active_player_changed"):
-		turn_manager.active_player_changed.connect(_on_active_player_changed)
+		turn_manager.connect("active_player_changed", _on_active_player_changed)
 	
 	if not _use_networked_game:
 		_spawn_initial_players()
@@ -91,9 +91,10 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	if _hover_marker and _hover_marker.visible:
 		_hover_time += delta
-		var pulse: float = sin(_hover_time * 6.0) * 0.05
+		var pulse: float = sin(_hover_time * 8.0) * 0.12
 		var base: Vector3 = terrain.call("axial_to_world", _hover_axial)
-		_hover_marker.position = base + Vector3(0.0, 0.05 + pulse, 0.0)
+		# Higher float (0.3) and stronger pulse
+		_hover_marker.position = base + Vector3(0.0, 0.3 + pulse, 0.0)
 
 # --- Private Methods ---
 
@@ -107,7 +108,7 @@ func _ensure_input_map() -> void:
 	_ensure_action("target_next", KEY_TAB)
 	_ensure_action("action_end_turn", KEY_SPACE)
 
-func _ensure_action(action_name: String, keycode: Key) -> void:
+func _ensure_action(action_name: String, keycode: int) -> void:
 	if not InputMap.has_action(action_name):
 		InputMap.add_action(action_name)
 	var events := InputMap.action_get_events(action_name)
@@ -151,10 +152,10 @@ func _setup_network_state() -> void:
 
 func _connect_network_signals() -> void:
 	if _network:
-		_network.snapshot_received.connect(_on_network_snapshot_received)
-		_network.update_received.connect(_on_network_update_received)
-		_network.error_received.connect(_on_network_error_received)
-		_network.status_received.connect(_on_network_status_received)
+		_network.connect("snapshot_received", _on_network_snapshot_received)
+		_network.connect("update_received", _on_network_update_received)
+		_network.connect("error_received", _on_network_error_received)
+		_network.connect("status_received", _on_network_status_received)
 
 func _spawn_initial_players() -> void:
 	for i: int in range(spawn_positions.size()):
@@ -212,12 +213,21 @@ func _try_move(direction: Vector2i) -> void:
 		_clear_hover()
 
 func _attempt_move(player: Node3D, direction: Vector2i) -> bool:
-	var axial_pos: Vector2i = player.get("axial_position")
+	var axial_raw = player.get("axial_position")
+	if typeof(axial_raw) != TYPE_VECTOR2I:
+		_log_system("Move failed: P%s axial unset (%s)" % [player.get("player_id"), axial_raw])
+		return false
+	var axial_pos: Vector2i = axial_raw
 	var target_axial: Vector2i = axial_pos + direction
-	if not terrain.call("is_within_play_area", target_axial) or world.call("is_blocked", target_axial, axial_pos):
+	
+	var in_play: bool = terrain.call("is_within_play_area", target_axial)
+	var blocked: bool = world.call("is_blocked", target_axial, axial_pos)
+	if not in_play or blocked:
+		_log_system("Move blocked: target %s in_play=%s blocked=%s" % [target_axial, in_play, blocked])
 		return false
 	
 	if not turn_manager.call("consume_move"):
+		_log_system("Move failed: no moves left for P%s" % player.get("player_id"))
 		return false
 		
 	world.call("set_blocked", axial_pos, false)
@@ -227,7 +237,10 @@ func _attempt_move(player: Node3D, direction: Vector2i) -> bool:
 	player.call("play_run")
 	
 	var near: Array = world.call("get_adjacent_entity_names", target_axial, _players, player)
-	if ui: ui.call("log_movement", "P%d moved to %s. Near: %s" % [player.get("player_id"), target_axial, near])
+	if ui:
+		ui.call("log_movement", "P%d moved to %s. Near: %s" % [player.get("player_id"), target_axial, near])
+		var moves_left: int = turn_manager.call("moves_left") if turn_manager else -1
+		_log_system("Move ok: P%s -> %s (moves_left=%s)" % [player.get("player_id"), target_axial, moves_left])
 	
 	if _is_human(player):
 		_auto_select_target(player)
@@ -421,6 +434,10 @@ func _update_all_ui() -> void:
 	for p: Node3D in _players:
 		p.call("set_is_current_turn", (p.get("player_id") as int) == active_id)
 
+func _log_system(text: String) -> void:
+	if ui and not text.is_empty():
+		ui.call("log_system", text)
+
 # --- Hover & Mouse Move ---
 
 func _create_hover_marker() -> void:
@@ -458,7 +475,8 @@ func _update_hover_from_mouse(screen_pos: Vector2) -> void:
 		_clear_hover()
 		return
 	_hover_axial = axial
-	_hover_marker.position = terrain.call("axial_to_world", axial) + Vector3(0, 0.05, 0)
+	# Floating higher (0.3)
+	_hover_marker.position = terrain.call("axial_to_world", axial) + Vector3(0, 0.3, 0)
 	_hover_marker.visible = true
 
 func _clear_hover() -> void:

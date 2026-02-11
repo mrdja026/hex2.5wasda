@@ -15,6 +15,7 @@ Use `@/openspec/AGENTS.md` to learn:
 
 Keep this managed block so 'openspec update' can refresh the instructions.
 
+Use read tool before writing to get the newest version.In code mode
 
 This guide outlines the best practices and coding standards for Godot 4.x development, formatted as a system prompt (or `Agents.md` equivalent) to guide an AI assistant or development team.
 

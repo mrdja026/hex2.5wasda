@@ -1,5 +1,6 @@
+## Manages the hexagonal terrain generation, materials, and coordinate conversion.
+# class_name HexTerrain
 extends Node3D
-class_name HexTerrain
 
 @export var play_radius: int = 4
 @export var buffer_thickness: int = 4
@@ -41,10 +42,10 @@ func build() -> void:
 	_play_axials.clear()
 	_buffer_axials.clear()
 
-	for q in range(-_total_radius, _total_radius + 1):
+	for q: int in range(-_total_radius, _total_radius + 1):
 		var r_start: int = max(-_total_radius, -q - _total_radius)
 		var r_end: int = min(_total_radius, -q + _total_radius)
-		for r in range(r_start, r_end + 1):
+		for r: int in range(r_start, r_end + 1):
 			var axial: Vector2i = Vector2i(q, r)
 			var distance: int = axial_distance(Vector2i.ZERO, axial)
 			var is_buffer: bool = distance > play_radius
@@ -71,9 +72,9 @@ func axial_distance(a: Vector2i, b: Vector2i) -> int:
 	var ds: int = -a.x - a.y - (-b.x - b.y)
 	return max(abs(dq), max(abs(dr), abs(ds)))
 
-func world_to_axial(world: Vector3) -> Vector2i:
-	var qf: float = (2.0 / 3.0) * world.x / tile_size
-	var rf: float = (-1.0 / 3.0) * world.x / tile_size + (sqrt(3.0) / 3.0) * world.z / tile_size
+func world_to_axial(world_pos: Vector3) -> Vector2i:
+	var qf: float = (2.0 / 3.0) * world_pos.x / tile_size
+	var rf: float = (-1.0 / 3.0) * world_pos.x / tile_size + (sqrt(3.0) / 3.0) * world_pos.z / tile_size
 	return _cube_round(qf, rf)
 
 func is_within_bounds(axial: Vector2i) -> bool:
@@ -113,7 +114,7 @@ func _cube_round(qf: float, rf: float) -> Vector2i:
 		ri = -qi - si
 	return Vector2i(qi, ri)
 
-func _create_tile(is_buffer: bool, axial: Vector2i, height: float) -> MeshInstance3D:
+func _create_tile(is_buffer: bool, _axial: Vector2i, height: float) -> MeshInstance3D:
 	var mesh: CylinderMesh = CylinderMesh.new()
 	mesh.top_radius = tile_size
 	mesh.bottom_radius = tile_size
@@ -128,7 +129,7 @@ func _create_tile(is_buffer: bool, axial: Vector2i, height: float) -> MeshInstan
 	var border: MeshInstance3D = _create_border(is_buffer, height)
 	tile.add_child(border)
 	if is_buffer:
-		_add_mountain_detail(tile, axial, height)
+		_add_mountain_detail(tile, _axial, height)
 	return tile
 
 func _ensure_materials() -> void:
@@ -153,7 +154,7 @@ func _create_border(is_buffer: bool, height: float) -> MeshInstance3D:
 	surface.begin(Mesh.PRIMITIVE_LINES)
 	surface.set_color(mountain_border_color if is_buffer else border_color)
 	var y: float = height * 0.5 + 0.01
-	for i in range(6):
+	for i: int in range(6):
 		var angle: float = deg_to_rad(60.0 * float(i))
 		var next_angle: float = deg_to_rad(60.0 * float(i + 1))
 		var a: Vector3 = Vector3(cos(angle), y, sin(angle)) * tile_size
@@ -180,11 +181,11 @@ func _add_mountain_detail(tile: MeshInstance3D, axial: Vector2i, height: float) 
 		var secondary_peak: MeshInstance3D = _create_mountain_peak(axial, height, 2, true)
 		tile.add_child(secondary_peak)
 
-func _create_mountain_peak(axial: Vector2i, base_height: float, seed: int, secondary: bool) -> MeshInstance3D:
+func _create_mountain_peak(axial: Vector2i, base_height: float, seed_val: int, secondary: bool) -> MeshInstance3D:
 	var mesh: CylinderMesh = CylinderMesh.new()
-	var scale: float = lerp(0.65, 1.0, _hash01(axial, seed))
-	var radius: float = tile_size * (0.3 if secondary else 0.5) * scale
-	var height: float = tile_size * (0.65 if secondary else 1.05) * (0.8 + 0.4 * _hash01(axial, seed + 11))
+	var scale_val: float = lerp(0.65, 1.0, _hash01(axial, seed_val))
+	var radius: float = tile_size * (0.3 if secondary else 0.5) * scale_val
+	var height: float = tile_size * (0.65 if secondary else 1.05) * (0.8 + 0.4 * _hash01(axial, seed_val + 11))
 	mesh.top_radius = 0.0
 	mesh.bottom_radius = radius
 	mesh.height = height
@@ -192,19 +193,18 @@ func _create_mountain_peak(axial: Vector2i, base_height: float, seed: int, secon
 	var peak: MeshInstance3D = MeshInstance3D.new()
 	peak.mesh = mesh
 	peak.material_override = _mountain_peak_secondary_material if secondary else _mountain_peak_material
-	var offset: Vector3 = _peak_offset(axial, seed, tile_size * 0.25)
+	var offset: Vector3 = _peak_offset(axial, seed_val, tile_size * 0.25)
 	peak.position = Vector3(offset.x, base_height * 0.5 + height * 0.5, offset.z)
-	peak.rotation.y = deg_to_rad(_hash01(axial, seed + 31) * 360.0)
+	peak.rotation.y = deg_to_rad(_hash01(axial, seed_val + 31) * 360.0)
 	return peak
 
-
-func _peak_offset(axial: Vector2i, seed: int, max_offset: float) -> Vector3:
-	var ox: float = (_hash01(axial, seed + 101) * 2.0 - 1.0) * max_offset
-	var oz: float = (_hash01(axial, seed + 202) * 2.0 - 1.0) * max_offset
+func _peak_offset(axial: Vector2i, seed_val: int, max_offset: float) -> Vector3:
+	var ox: float = (_hash01(axial, seed_val + 101) * 2.0 - 1.0) * max_offset
+	var oz: float = (_hash01(axial, seed_val + 202) * 2.0 - 1.0) * max_offset
 	return Vector3(ox, 0.0, oz)
 
-func _hash01(axial: Vector2i, seed: int) -> float:
-	var n: float = float(axial.x * 127.1 + axial.y * 311.7 + seed * 74.7)
+func _hash01(axial: Vector2i, seed_val: int) -> float:
+	var n: float = float(axial.x * 127.1 + axial.y * 311.7 + seed_val * 74.7)
 	var s: float = sin(n) * 43758.5453
 	return s - floor(s)
 
@@ -222,7 +222,7 @@ func _apply_shader_params(material: ShaderMaterial, base: Color, highlight: Colo
 	material.set_shader_parameter("detail_strength", strength)
 
 func _clear_tiles() -> void:
-	for tile in _tiles:
+	for tile: MeshInstance3D in _tiles:
 		if is_instance_valid(tile):
 			tile.queue_free()
 	_tiles.clear()

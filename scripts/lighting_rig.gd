@@ -1,3 +1,5 @@
+## Manages the lighting setup, including a directional light and a point light.
+# class_name LightingRig
 extends Node3D
 
 @export var directional_color: Color = Color(1.0, 0.98, 0.95)

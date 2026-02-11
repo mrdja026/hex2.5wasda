@@ -1,17 +1,17 @@
+## Manages the turn-based logic, including player registration and action tracking.
 extends Node
-class_name TurnManager
 
-signal active_player_changed(player)
+signal active_player_changed(player: Node)
 
 const MAX_PLAYERS: int = 10
 const MOVES_PER_TURN: int = 2
 
-var _players: Array[PlayerUnit] = []
+var _players: Array[Node] = []
 var _active_index: int = -1
 var _moves_left: int = 0
 var _action_available: bool = true
 
-func register_player(player: PlayerUnit) -> bool:
+func register_player(player: Node) -> bool:
 	if _players.size() >= MAX_PLAYERS:
 		return false
 	if _players.has(player):
@@ -19,7 +19,7 @@ func register_player(player: PlayerUnit) -> bool:
 	_players.append(player)
 	return true
 
-func remove_player(player: PlayerUnit) -> void:
+func remove_player(player: Node) -> void:
 	var index: int = _players.find(player)
 	if index == -1:
 		return
@@ -42,18 +42,18 @@ func start_turns() -> void:
 	_reset_turn_state()
 	_emit_active_changed()
 
-func get_active_player() -> PlayerUnit:
+func get_active_player() -> Node:
 	if _active_index < 0 or _active_index >= _players.size():
 		return null
 	return _players[_active_index]
 
-func can_act(player: PlayerUnit) -> bool:
+func can_act(player: Node) -> bool:
 	return player != null and player == get_active_player()
 
-func can_move(player: PlayerUnit) -> bool:
+func can_move(player: Node) -> bool:
 	return can_act(player) and _action_available and _moves_left > 0
 
-func can_use_action(player: PlayerUnit) -> bool:
+func can_use_action(player: Node) -> bool:
 	return can_act(player) and _action_available
 
 func consume_move() -> bool:
@@ -79,7 +79,7 @@ func action_available() -> bool:
 	return _action_available
 
 func _emit_active_changed() -> void:
-	emit_signal("active_player_changed", get_active_player())
+	active_player_changed.emit(get_active_player())
 
 func _reset_turn_state() -> void:
 	_moves_left = MOVES_PER_TURN

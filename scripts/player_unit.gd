@@ -1,5 +1,5 @@
+## Represents a unit in the game, managing its health, model, and animations.
 extends Node3D
-class_name PlayerUnit
 
 signal health_changed(current: int, maximum: int)
 
@@ -57,18 +57,18 @@ func apply_damage(amount: int) -> void:
 		return
 	health = max(health - amount, 0)
 	_update_health_bar()
-	emit_signal("health_changed", health, max_health)
+	health_changed.emit(health, max_health)
 
 func heal_self() -> void:
 	health = min(health + heal_amount, max_health)
 	_update_health_bar()
-	emit_signal("health_changed", health, max_health)
+	health_changed.emit(health, max_health)
 
 func set_health(current: int, maximum: int) -> void:
 	max_health = max(maximum, 1)
 	health = clamp(current, 0, max_health)
 	_update_health_bar()
-	emit_signal("health_changed", health, max_health)
+	health_changed.emit(health, max_health)
 
 func play_attack() -> void:
 	if animation_player.has_animation("attack"):
@@ -93,7 +93,7 @@ func _apply_color() -> void:
 		_base_material.albedo_color = Color(0.2, 0.45, 0.9) if _is_npc else Color(0.9, 0.2, 0.2)
 	else:
 		_base_material.albedo_color = Color(0.9, 0.2, 0.2) if player_id == 1 else Color(0.2, 0.45, 0.9)
-	for mesh in _meshes:
+	for mesh: MeshInstance3D in _meshes:
 		mesh.material_override = _base_material
 	_apply_outline(_is_targeted)
 
@@ -101,9 +101,9 @@ func _cache_meshes() -> void:
 	_meshes.clear()
 	if model == null:
 		return
-	for child in model.get_children():
+	for child: Node in model.get_children():
 		if child is MeshInstance3D:
-			_meshes.append(child)
+			_meshes.append(child as MeshInstance3D)
 
 func _ensure_health_bar() -> void:
 	if has_node("HealthBar"):
@@ -180,8 +180,8 @@ func _apply_outline(enabled: bool) -> void:
 		return
 	if _outline_material == null:
 		_outline_material = _get_outline_material()
-	for mesh in _meshes:
-		var material: BaseMaterial3D = mesh.material_override as BaseMaterial3D
+	for mesh: MeshInstance3D in _meshes:
+		var material := mesh.material_override as BaseMaterial3D
 		if material == null:
 			continue
 		material.next_pass = _outline_material if enabled else null
@@ -197,7 +197,7 @@ func _get_outline_material() -> ShaderMaterial:
 func _ensure_animations() -> void:
 	if animation_player == null:
 		return
-	var callback: Callable = Callable(self, "_on_animation_finished")
+	var callback: Callable = _on_animation_finished
 	if animation_player.animation_finished.is_connected(callback) == false:
 		animation_player.animation_finished.connect(callback)
 	var library: AnimationLibrary
@@ -256,8 +256,8 @@ func _build_attack_animation() -> Animation:
 	anim.track_insert_key(arm_r, 0.3, Vector3(0.0, 0.0, 0.0))
 	return anim
 
-func _on_animation_finished(name: StringName) -> void:
-	if name == "run" or name == "attack":
+func _on_animation_finished(anim_name: StringName) -> void:
+	if anim_name == &"run" or anim_name == &"attack":
 		_play_idle()
 
 func _play_idle() -> void:

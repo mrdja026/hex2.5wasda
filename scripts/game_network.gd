@@ -1,3 +1,4 @@
+## Manages the network connection to the game backend.
 class_name GameNetworkClient
 extends Node
 
@@ -16,15 +17,15 @@ var auth_cookie: String = ""
 var channel_id: int = -1
 var username: String = ""
 
+@onready var _http := HTTPRequest.new()
+@onready var _command_http := HTTPRequest.new()
+@onready var _poll_http := HTTPRequest.new()
+
 var _command_queue: Array = []
 var _command_inflight: bool = false
 var _poll_inflight: bool = false
 var _poll_elapsed: float = 0.0
 var _poll_interval: float = 4.0
-
-@onready var _http: HTTPRequest = HTTPRequest.new()
-@onready var _command_http: HTTPRequest = HTTPRequest.new()
-@onready var _poll_http: HTTPRequest = HTTPRequest.new()
 var _ws: WebSocketPeer
 var _channel_id: int = -1
 var _is_connecting: bool = false
@@ -37,23 +38,6 @@ func _ready() -> void:
 	_http.timeout = 8.0
 	_command_http.timeout = 8.0
 	_poll_http.timeout = 8.0
-
-func connect_to_game() -> void:
-	if _is_connecting:
-		return
-	_is_connecting = true
-	_call_connect_flow()
-
-func send_command(command: String, target_username: String = "", force: bool = false) -> void:
-	if _channel_id <= 0:
-		emit_signal("error_received", "Game channel not joined")
-		return
-	_command_queue.append({
-		"command": command,
-		"target_username": target_username,
-		"force": force,
-	})
-	_call_send_command()
 
 func _process(_delta: float) -> void:
 	if _ws == null:
@@ -69,8 +53,25 @@ func _process(_delta: float) -> void:
 		var data: Variant = JSON.parse_string(text)
 		if typeof(data) != TYPE_DICTIONARY:
 			continue
-		_handle_socket_message(data)
+		_handle_socket_message(data as Dictionary)
 	_poll_tick(_delta)
+
+func connect_to_game() -> void:
+	if _is_connecting:
+		return
+	_is_connecting = true
+	_call_connect_flow()
+
+func send_command(command: String, target_username: String = "", force: bool = false) -> void:
+	if _channel_id <= 0:
+		error_received.emit("Game channel not joined")
+		return
+	_command_queue.append({
+		"command": command,
+		"target_username": target_username,
+		"force": force,
+	})
+	_call_send_command()
 
 func _call_connect_flow() -> void:
 	await _connect_flow()
@@ -82,40 +83,41 @@ func _connect_flow() -> void:
 	var health_ok: bool = await _probe_backend()
 	if not health_ok:
 		_is_connecting = false
-		emit_signal("error_received", "Backend not reachable")
+		error_received.emit("Backend not reachable")
 		return
 	var response: Dictionary = await _auth_game_with_fallback()
 	if not response.get("ok", false):
 		_is_connecting = false
-		emit_signal("error_received", "Failed to authenticate for #game")
+		error_received.emit("Failed to authenticate for #game")
 		return
 	var data: Variant = response.get("data")
 	if typeof(data) != TYPE_DICTIONARY:
 		_is_connecting = false
-		emit_signal("error_received", "Invalid auth response")
+		error_received.emit("Invalid auth response")
 		return
-	var access_token: String = str(data.get("access_token", ""))
-	var token_type: String = str(data.get("token_type", "bearer")).to_lower()
+	var data_dict := data as Dictionary
+	var access_token: String = str(data_dict.get("access_token", ""))
+	var token_type: String = str(data_dict.get("token_type", "bearer")).to_lower()
 	if access_token.is_empty():
 		_is_connecting = false
-		emit_signal("error_received", "Missing access token")
+		error_received.emit("Missing access token")
 		return
 	if token_type == "bearer":
 		auth_cookie = "Bearer %s" % access_token
 	else:
 		auth_cookie = access_token
-	user_id = int(data.get("user_id", 0))
-	_channel_id = int(data.get("channel_id", -1))
+	user_id = int(data_dict.get("user_id", 0))
+	_channel_id = int(data_dict.get("channel_id", -1))
 	channel_id = _channel_id
-	username = str(data.get("username", ""))
+	username = str(data_dict.get("username", ""))
 	if not username.is_empty():
-		emit_signal("status_received", "Auth OK: %s" % username)
-	var snapshot: Variant = data.get("snapshot", {})
+		status_received.emit("Auth OK: %s" % username)
+	var snapshot: Variant = data_dict.get("snapshot", {})
 	if typeof(snapshot) == TYPE_DICTIONARY:
-		emit_signal("snapshot_received", snapshot)
+		snapshot_received.emit(snapshot as Dictionary)
 	if user_id <= 0 or _channel_id <= 0:
 		_is_connecting = false
-		emit_signal("error_received", "Invalid auth payload")
+		error_received.emit("Invalid auth payload")
 		return
 	await _request_json(HTTPClient.METHOD_POST, "/channels/%s/join" % _channel_id)
 	_connect_websocket()
@@ -126,7 +128,7 @@ func _auth_game_with_fallback() -> Dictionary:
 	if response.get("ok", false):
 		return response
 	if _should_try_fallback() and base_url != FALLBACK_BASE_URL:
-		emit_signal("status_received", "Auth failed, retrying %s" % FALLBACK_BASE_URL)
+		status_received.emit("Auth failed, retrying %s" % FALLBACK_BASE_URL)
 		base_url = FALLBACK_BASE_URL
 		if not await _health_check(base_url):
 			return response
@@ -135,13 +137,13 @@ func _auth_game_with_fallback() -> Dictionary:
 
 func _probe_backend() -> bool:
 	if await _health_check(base_url):
-		emit_signal("status_received", "Health OK: %s" % base_url)
+		status_received.emit("Health OK: %s" % base_url)
 		return true
 	if _should_try_fallback():
-		emit_signal("status_received", "Health failed, retrying %s" % FALLBACK_BASE_URL)
+		status_received.emit("Health failed, retrying %s" % FALLBACK_BASE_URL)
 		base_url = FALLBACK_BASE_URL
 		if await _health_check(base_url):
-			emit_signal("status_received", "Health OK: %s" % base_url)
+			status_received.emit("Health OK: %s" % base_url)
 			return true
 	return false
 
@@ -154,7 +156,7 @@ func _health_check(url_root: String) -> bool:
 	if not ok:
 		var error_code: String = str(response.get("error_code", ""))
 		if not error_code.is_empty():
-			emit_signal("status_received", "Health error: %s" % error_code)
+			status_received.emit("Health error: %s" % error_code)
 	return ok
 
 func _should_try_fallback() -> bool:
@@ -166,7 +168,7 @@ func _process_command_queue() -> void:
 	if _command_queue.is_empty():
 		return
 	_command_inflight = true
-	var item: Dictionary = _command_queue.pop_front()
+	var item := _command_queue.pop_front() as Dictionary
 	await _send_command(item)
 	_command_inflight = false
 	await _process_command_queue()
@@ -183,13 +185,15 @@ func _send_command(item: Dictionary) -> void:
 	var response: Dictionary = await _request_json(HTTPClient.METHOD_POST, "/game/command", payload, _command_http)
 	var status: int = int(response.get("status", 0))
 	if response.get("ok", false):
-		emit_signal("status_received", "Command OK status=%s" % status)
+		status_received.emit("Command OK status=%s" % status)
 		return
 	var error_text: String = "Command failed"
 	var response_data: Variant = response.get("data")
-	if typeof(response_data) == TYPE_DICTIONARY and response_data.has("error"):
-		error_text = str(response_data.get("error"))
-	emit_signal("status_received", "%s status=%s" % [error_text, status])
+	if typeof(response_data) == TYPE_DICTIONARY:
+		var response_dict := response_data as Dictionary
+		if response_dict.has("error"):
+			error_text = str(response_dict.get("error"))
+	status_received.emit("%s status=%s" % [error_text, status])
 
 func _connect_websocket() -> void:
 	var ws_url: String = _build_ws_url()
@@ -223,30 +227,30 @@ func _poll_snapshot() -> void:
 		return
 	var data: Variant = response.get("data")
 	if typeof(data) == TYPE_DICTIONARY:
-		emit_signal("snapshot_received", data)
+		snapshot_received.emit(data as Dictionary)
 
 func _handle_socket_message(data: Dictionary) -> void:
 	var message_type: String = data.get("type", "")
 	if message_type == "game_action_error":
 		var error_message: String = str(data.get("error", "Unknown error"))
-		emit_signal("error_received", error_message)
+		error_received.emit(error_message)
 		return
 	if message_type == "game_state_update":
 		var snapshot: Variant = data.get("snapshot", {})
 		if typeof(snapshot) == TYPE_DICTIONARY:
-			emit_signal("snapshot_received", snapshot)
+			snapshot_received.emit(snapshot as Dictionary)
 		return
 	if message_type == "game_action":
 		var snapshot_action: Variant = data.get("snapshot", {})
 		if typeof(snapshot_action) == TYPE_DICTIONARY:
-			emit_signal("snapshot_received", snapshot_action)
-		emit_signal("update_received", data)
+			snapshot_received.emit(snapshot_action as Dictionary)
+		update_received.emit(data)
 
 func _request_json(method: int, path: String, body: Dictionary = {}, http_request: HTTPRequest = null) -> Dictionary:
 	var request_node: HTTPRequest = http_request if http_request != null else _http
 	var url: String = _build_url(path)
 	var method_name: String = _method_name(method)
-	emit_signal("status_received", "%s %s" % [method_name, url])
+	status_received.emit("%s %s" % [method_name, url])
 	var headers: PackedStringArray = PackedStringArray()
 	headers.append("Content-Type: application/json")
 	if not auth_cookie.is_empty():
@@ -256,7 +260,7 @@ func _request_json(method: int, path: String, body: Dictionary = {}, http_reques
 		payload = JSON.stringify(body)
 	var error: int = request_node.request(url, headers, method, payload)
 	if error != OK:
-		emit_signal("status_received", "%s %s error=%s" % [method_name, url, error])
+		status_received.emit("%s %s error=%s" % [method_name, url, error])
 		return {"ok": false, "error": "request_failed", "error_code": error}
 	var result: Array = await request_node.request_completed
 	var request_result: int = int(result[0])
@@ -267,7 +271,7 @@ func _request_json(method: int, path: String, body: Dictionary = {}, http_reques
 	if not body_text.is_empty():
 		parsed = JSON.parse_string(body_text)
 	if request_result != HTTPRequest.RESULT_SUCCESS:
-		emit_signal("status_received", "%s %s result=%s status=%s" % [method_name, url, request_result, status_code])
+		status_received.emit("%s %s result=%s status=%s" % [method_name, url, request_result, status_code])
 		return {
 			"ok": false,
 			"status": status_code,
@@ -275,7 +279,7 @@ func _request_json(method: int, path: String, body: Dictionary = {}, http_reques
 			"error": "request_failed",
 			"error_code": request_result,
 		}
-	emit_signal("status_received", "%s %s status=%s" % [method_name, url, status_code])
+	status_received.emit("%s %s status=%s" % [method_name, url, status_code])
 	return {
 		"ok": status_code >= 200 and status_code < 300,
 		"status": status_code,

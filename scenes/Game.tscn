@@ -1,9 +1,12 @@
 [gd_scene load_steps=6 format=3]
 
-[ext_resource type="Script" path="res://scripts/Game.gd" id=1]
-[ext_resource type="Script" path="res://scripts/HexTerrain.gd" id=2]
-[ext_resource type="Script" path="res://scripts/TurnManager.gd" id=3]
-[ext_resource type="Script" path="res://scripts/LightingRig.gd" id=4]
+[ext_resource type="Script" path="res://scripts/game.gd" id=1]
+[ext_resource type="Script" path="res://scripts/hex_terrain.gd" id=2]
+[ext_resource type="Script" path="res://scripts/turn_manager.gd" id=3]
+[ext_resource type="Script" path="res://scripts/lighting_rig.gd" id=4]
+[ext_resource type="Script" path="res://scripts/game_world.gd" id=5]
+[ext_resource type="Script" path="res://scripts/game_ui.gd" id=6]
+[ext_resource type="Script" path="res://scripts/game_camera.gd" id=7]
 
 [sub_resource type="StyleBoxFlat" id=1]
 bg_color = Color(0.92, 0.86, 0.72, 0.9)
@@ -50,6 +53,15 @@ script = ExtResource(3)
 
 [node name="LightingRig" type="Node3D" parent="."]
 script = ExtResource(4)
+
+[node name="GameWorld" type="Node3D" parent="."]
+script = ExtResource(5)
+
+[node name="GameUI" type="Node" parent="."]
+script = ExtResource(6)
+
+[node name="GameCamera" type="Node" parent="."]
+script = ExtResource(7)
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="LightingRig"]
 

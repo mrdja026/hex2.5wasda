@@ -10,6 +10,11 @@ const HEX_DIRECTIONS: Array[Vector2i] = [
 const MOVE_DIRECTIONS: Array[Vector2i] = [
 	Vector2i(0, -1), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(1, 0)
 ]
+const FILE_MENU_RECONNECT: int = 1
+const FILE_MENU_SHOW_JOIN: int = 2
+const FILE_MENU_QUIT: int = 3
+const DEBUG_MENU_TOGGLE_CONSOLE: int = 101
+const BACKEND_GRID_MAX_INDEX: float = 63.0
 
 # --- Exports ---
 @export var player_scene: PackedScene = preload("res://scenes/PlayerUnit.tscn")
@@ -43,12 +48,21 @@ const MOVE_DIRECTIONS: Array[Vector2i] = [
 @onready var join_button: Button = $UI/JoinPanel/MarginContainer/VBoxContainer/JoinButton as Button
 @onready var network_console_label: Label = $UI/NetworkConsolePanel/MarginContainer/ConsoleLabel as Label
 @onready var network_console_panel: PanelContainer = $UI/NetworkConsolePanel as PanelContainer
+@onready var file_menu: MenuButton = $UI/MenuBar/MarginContainer/HBoxContainer/FileMenu as MenuButton
+@onready var debug_menu: MenuButton = $UI/MenuBar/MarginContainer/HBoxContainer/DebugMenu as MenuButton
 
 # --- Private Variables ---
 var _players: Array[Node3D] = []
 var _current_target: Node3D = null
 var _network: Node = null
 var _network_active_turn_id: int = 0
+var _network_players_by_id: Dictionary = {}
+var _is_ws_connected: bool = false
+var _online_human_count: int = 0
+var _heartbeat_ok: bool = true
+var _heartbeat_latency_ms: int = -1
+var _heartbeat_missed_count: int = 0
+var _join_status_message: String = "Offline"
 var _is_panning: bool = false
 var _is_human_moving: bool = false
 var _use_networked_game: bool = false
@@ -139,16 +153,44 @@ func _setup_components() -> void:
 	
 	if join_button and not join_button.pressed.is_connected(_on_join_pressed):
 		join_button.pressed.connect(_on_join_pressed)
+	_setup_menu_buttons()
+
+func _setup_menu_buttons() -> void:
+	if file_menu:
+		var file_popup: PopupMenu = file_menu.get_popup()
+		file_popup.clear()
+		file_popup.add_item("Reconnect", FILE_MENU_RECONNECT)
+		file_popup.add_item("Show Join Panel", FILE_MENU_SHOW_JOIN)
+		file_popup.add_separator()
+		file_popup.add_item("Quit", FILE_MENU_QUIT)
+		if not file_popup.id_pressed.is_connected(_on_file_menu_id_pressed):
+			file_popup.id_pressed.connect(_on_file_menu_id_pressed)
+	if debug_menu:
+		var debug_popup: PopupMenu = debug_menu.get_popup()
+		debug_popup.clear()
+		debug_popup.add_item("Toggle Network Console", DEBUG_MENU_TOGGLE_CONSOLE)
+		if not debug_popup.id_pressed.is_connected(_on_debug_menu_id_pressed):
+			debug_popup.id_pressed.connect(_on_debug_menu_id_pressed)
 
 func _setup_network_state() -> void:
 	_use_networked_game = use_networked_game and get_node_or_null("/root/GameNetwork") != null
 	if _use_networked_game:
 		_network = get_node("/root/GameNetwork")
 		_connect_network_signals()
-		_network.call("connect_to_game")
+		_attempt_network_connect()
 		join_panel.visible = true
+		network_console_panel.visible = true
+		if _network.has_method("set_debug_heartbeat_enabled"):
+			_network.call("set_debug_heartbeat_enabled", network_console_panel.visible)
+		_update_presence_badge()
 		if ui:
+			ui.call("log_network", "Network mode enabled")
+			var logger_node: Node = get_node_or_null("/root/GameLogger")
+			if logger_node and logger_node.has_method("get_log_path"):
+				ui.call("log_network", "Log file: %s" % logger_node.call("get_log_path"))
 			ui.call("log_network", "Connecting to %s..." % _network.get("base_url"))
+	elif ui:
+		ui.call("log_network", "Network mode disabled")
 
 func _connect_network_signals() -> void:
 	if _network:
@@ -156,6 +198,10 @@ func _connect_network_signals() -> void:
 		_network.connect("update_received", _on_network_update_received)
 		_network.connect("error_received", _on_network_error_received)
 		_network.connect("status_received", _on_network_status_received)
+		if _network.has_signal("connection_state_changed"):
+			_network.connect("connection_state_changed", _on_network_connection_state_changed)
+		if _network.has_signal("heartbeat_status_changed"):
+			_network.connect("heartbeat_status_changed", _on_heartbeat_status_changed)
 
 func _spawn_initial_players() -> void:
 	for i: int in range(spawn_positions.size()):
@@ -325,10 +371,51 @@ func _run_ai_turn(player: Node3D) -> void:
 # --- Network Handlers ---
 
 func _on_join_pressed() -> void:
-	if _network:
+	_attempt_network_connect()
+
+func _attempt_network_connect() -> void:
+	if not _network:
+		var network_singleton: Node = get_node_or_null("/root/GameNetwork")
+		if network_singleton:
+			_network = network_singleton
+			_connect_network_signals()
+			_use_networked_game = true
+		else:
+			if network_console_panel:
+				network_console_panel.visible = true
+			_set_join_status("GameNetwork autoload is missing")
+			if ui:
+				ui.call("log_network", "GameNetwork autoload is missing")
+			return
+	if join_button:
 		join_button.disabled = true
-		join_status.text = "Connecting..."
-		_network.call("connect_to_game")
+	_set_join_status("Checking backend...")
+	if network_console_panel:
+		network_console_panel.visible = true
+		if _network.has_method("set_debug_heartbeat_enabled"):
+			_network.call("set_debug_heartbeat_enabled", true)
+	if ui:
+		ui.call("log_network", "Join requested")
+	_network.call("connect_to_game")
+
+func _on_file_menu_id_pressed(id: int) -> void:
+	match id:
+		FILE_MENU_RECONNECT:
+			_attempt_network_connect()
+		FILE_MENU_SHOW_JOIN:
+			if join_panel:
+				join_panel.visible = true
+			if join_button:
+				join_button.disabled = false
+		FILE_MENU_QUIT:
+			get_tree().quit()
+
+func _on_debug_menu_id_pressed(id: int) -> void:
+	if id == DEBUG_MENU_TOGGLE_CONSOLE and network_console_panel:
+		network_console_panel.visible = not network_console_panel.visible
+		if _network and _network.has_method("set_debug_heartbeat_enabled"):
+			_network.call("set_debug_heartbeat_enabled", network_console_panel.visible)
+		_update_all_ui()
 
 func _handle_network_input(event: InputEvent) -> void:
 	if not _is_network_turn() or not _network: return
@@ -341,21 +428,115 @@ func _handle_network_input(event: InputEvent) -> void:
 
 func _on_network_snapshot_received(snapshot: Dictionary) -> void:
 	_network_active_turn_id = int(snapshot.get("active_turn_user_id", 0))
-	_sync_network_players(snapshot.get("players", []) as Array)
-	_sync_network_obstacles(snapshot.get("obstacles", []) as Array)
+	_online_human_count = _count_human_players(snapshot.get("players", []) as Array)
+	var battlefield_payload: Dictionary = {}
+	var raw_battlefield: Variant = snapshot.get("battlefield", {})
+	if typeof(raw_battlefield) == TYPE_DICTIONARY:
+		battlefield_payload = raw_battlefield as Dictionary
+	if ui:
+		ui.call(
+			"log_network",
+			"Snapshot players=%s obstacles=%s props=%s active=%s" % [
+				(snapshot.get("players", []) as Array).size(),
+				(snapshot.get("obstacles", []) as Array).size(),
+				(battlefield_payload.get("props", []) as Array).size(),
+				_network_active_turn_id,
+			],
+		)
+	if world:
+		world.call("clear_state")
+	if battlefield_payload.is_empty():
+		_sync_network_obstacles(snapshot.get("obstacles", []) as Array)
+	else:
+		_sync_network_battlefield(battlefield_payload)
+	_sync_network_players(snapshot.get("players", []) as Array, true)
 	if join_panel: join_panel.visible = false
+	if join_button: join_button.disabled = false
+	_set_join_status("Joined #game")
+	_update_presence_badge()
 	_update_all_ui()
 
-func _on_network_update_received(_update: Dictionary) -> void:
+
+func _on_network_update_received(update: Dictionary) -> void:
+	if update.has("active_turn_user_id"):
+		_network_active_turn_id = int(update.get("active_turn_user_id", 0))
+	_online_human_count = _count_human_players(update.get("players", []) as Array)
+	if ui:
+		ui.call(
+			"log_network",
+			"Update players=%s active=%s" % [
+				(update.get("players", []) as Array).size(),
+				_network_active_turn_id,
+			],
+		)
+	_sync_network_players(update.get("players", []) as Array, false)
+	_update_presence_badge()
+	_update_all_ui()
+
+func _on_network_connection_state_changed(is_connected: bool) -> void:
+	_is_ws_connected = is_connected
+	if not is_connected:
+		_online_human_count = 0
+		_heartbeat_ok = false
+		_heartbeat_latency_ms = -1
+		_heartbeat_missed_count = 0
+	_update_presence_badge()
+	_update_all_ui()
+
+func _on_heartbeat_status_changed(ok: bool, latency_ms: int, missed_count: int) -> void:
+	_heartbeat_ok = ok
+	_heartbeat_latency_ms = latency_ms
+	_heartbeat_missed_count = missed_count
 	_update_all_ui()
 
 func _on_network_error_received(msg: String) -> void:
 	if ui: ui.call("log_network", "Error: %s" % msg)
 	if join_button: join_button.disabled = false
-	if join_status: join_status.text = msg
+	_set_join_status(msg)
+	_update_all_ui()
 
 func _on_network_status_received(msg: String) -> void:
 	if ui: ui.call("log_network", msg)
+	if join_panel and join_panel.visible:
+		_set_join_status(msg)
+	_update_all_ui()
+
+func _count_human_players(players_data: Array) -> int:
+	var count: int = 0
+	for item: Variant in players_data:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = item as Dictionary
+		if bool(entry.get("is_npc", false)):
+			continue
+		count += 1
+	return count
+
+func _is_online_presence() -> bool:
+	return _is_ws_connected and _online_human_count > 0
+
+func _update_presence_badge() -> void:
+	if debug_menu:
+		debug_menu.text = "Debug [%s]" % ("ONLINE" if _is_online_presence() else "OFFLINE")
+	_render_join_status()
+
+func _set_join_status(message: String) -> void:
+	_join_status_message = message
+	_render_join_status()
+
+func _render_join_status() -> void:
+	if not join_status:
+		return
+	var heartbeat_text: String = "OK"
+	if not _heartbeat_ok:
+		heartbeat_text = "STALE (%s missed)" % _heartbeat_missed_count
+	elif _heartbeat_latency_ms >= 0:
+		heartbeat_text = "OK (%sms)" % _heartbeat_latency_ms
+	join_status.text = "%s\nPresence: %s\nHeartbeat: %s" % [
+		_join_status_message,
+		"ONLINE" if _is_online_presence() else "OFFLINE",
+		heartbeat_text,
+	]
 
 # --- Helper Methods ---
 
@@ -416,7 +597,18 @@ func _update_all_ui() -> void:
 		ids.sort()
 		if ui:
 			ui.call("update_turn_panel_online", ids, _network_active_turn_id, _players.size())
-			ui.call("update_network_console", _network.get("base_url"), _network.get("user_id"), str(_network.get("channel_id")), _network_active_turn_id)
+			ui.call(
+				"update_network_console",
+				_network.get("base_url"),
+				_network.get("user_id"),
+				str(_network.get("channel_id")),
+				_network_active_turn_id,
+				_is_online_presence(),
+				_online_human_count,
+				_heartbeat_ok,
+				_heartbeat_latency_ms,
+				_heartbeat_missed_count
+			)
 	else:
 		var active: Node3D = turn_manager.call("get_active_player") if turn_manager else null
 		if ui: ui.call("update_turn_panel_offline", active, _current_target, _players.size())
@@ -493,24 +685,168 @@ func _try_mouse_move() -> void:
 
 # --- Simplified Network Sync ---
 
-func _sync_network_players(data: Array) -> void:
-	for p: Node3D in _players: 
-		if is_instance_valid(p): p.queue_free()
+func _sync_network_battlefield(battlefield: Dictionary) -> void:
+	if world == null:
+		return
+	var rendered_props: int = 0
+	var rendered_buffer: int = 0
+	var seen_axials: Dictionary = {}
+
+	var props_data: Array = battlefield.get("props", []) as Array
+	for item: Variant in props_data:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = item as Dictionary
+		var backend_pos: Vector2i = Vector2i.ZERO
+		if entry.has("position") and typeof(entry.get("position")) == TYPE_DICTIONARY:
+			var position: Dictionary = entry.get("position") as Dictionary
+			backend_pos = Vector2i(int(position.get("x", 0)), int(position.get("y", 0)))
+		var axial: Vector2i = _map_backend_position_to_world_axial(backend_pos)
+		if seen_axials.has(axial):
+			continue
+		seen_axials[axial] = true
+		var prop_type: String = str(entry.get("type", "rock")).to_lower()
+		if prop_type != "tree":
+			prop_type = "rock"
+		var is_blocking: bool = bool(entry.get("is_blocking", true))
+		world.call("spawn_network_prop", prop_type, axial, is_blocking)
+		rendered_props += 1
+
+	var buffer_data: Dictionary = battlefield.get("buffer", {}) as Dictionary
+	var buffer_tiles: Array = buffer_data.get("tiles", []) as Array
+	for item: Variant in buffer_tiles:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = item as Dictionary
+		var backend_pos := Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0)))
+		var axial: Vector2i = _map_backend_position_to_world_axial(backend_pos)
+		if seen_axials.has(axial):
+			continue
+		world.call("set_blocked", axial, true)
+		seen_axials[axial] = true
+		rendered_buffer += 1
+
+	if ui:
+		ui.call(
+			"log_network",
+			"Battlefield rendered props=%s buffer=%s" % [rendered_props, rendered_buffer],
+		)
+
+func _sync_network_players(data: Array, is_full_sync: bool) -> void:
+	var seen_ids: Dictionary = {}
+	for item: Variant in data:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = item as Dictionary
+		var user_id: int = int(entry.get("user_id", 0))
+		if user_id <= 0:
+			continue
+		seen_ids[user_id] = true
+
+		var player: Node3D = _network_players_by_id.get(user_id)
+		var is_new_player: bool = false
+		if player == null or not is_instance_valid(player):
+			player = player_scene.instantiate() as Node3D
+			player.set("player_id", user_id)
+			player_container.add_child(player)
+			_network_players_by_id[user_id] = player
+			is_new_player = true
+
+		var next_axial: Vector2i = _extract_axial_from_payload(entry)
+		var previous_axial: Vector2i = player.get("axial_position") as Vector2i
+		if world and not is_new_player and previous_axial != next_axial:
+			world.call("set_blocked", previous_axial, false)
+
+		player.call("set_axial_position", next_axial)
+		player.position = terrain.call("axial_to_world", next_axial) + Vector3(0, 0.6, 0)
+		player.call("set_health", int(entry.get("health", 10)), int(entry.get("max_health", 10)))
+		if entry.has("is_npc"):
+			player.call("set_is_npc", bool(entry.get("is_npc", false)))
+
+		if world:
+			world.call("set_blocked", next_axial, true)
+
+	if is_full_sync:
+		for key: Variant in _network_players_by_id.keys():
+			var tracked_id: int = int(key)
+			if seen_ids.has(tracked_id):
+				continue
+			var stale_player: Node3D = _network_players_by_id.get(tracked_id)
+			if stale_player != null and is_instance_valid(stale_player):
+				var stale_axial: Vector2i = stale_player.get("axial_position") as Vector2i
+				if world:
+					world.call("set_blocked", stale_axial, false)
+				stale_player.queue_free()
+			_network_players_by_id.erase(tracked_id)
+
 	_players.clear()
-	for entry: Dictionary in data:
-		var p: Node3D = player_scene.instantiate() as Node3D
-		p.set("player_id", int(entry.get("user_id", 0)))
-		var axial: Vector2i = Vector2i(int(entry.get("position_x", 0)), int(entry.get("position_y", 0)))
-		p.call("set_axial_position", axial)
-		p.position = terrain.call("axial_to_world", axial) + Vector3(0, 0.6, 0)
-		p.call("set_health", int(entry.get("health", 10)), int(entry.get("max_health", 10)))
-		player_container.add_child(p)
-		_players.append(p)
+	for value: Variant in _network_players_by_id.values():
+		var current_player: Node3D = value as Node3D
+		if current_player != null and is_instance_valid(current_player):
+			_players.append(current_player)
+
+
+func _extract_axial_from_payload(entry: Dictionary) -> Vector2i:
+	var backend_position: Vector2i = Vector2i.ZERO
+	var has_position_dict: bool = false
+	if entry.has("position"):
+		var raw_position: Variant = entry.get("position")
+		if typeof(raw_position) == TYPE_DICTIONARY:
+			var position: Dictionary = raw_position as Dictionary
+			backend_position = Vector2i(int(position.get("x", 0)), int(position.get("y", 0)))
+			has_position_dict = true
+	if not has_position_dict:
+		backend_position = Vector2i(int(entry.get("position_x", 0)), int(entry.get("position_y", 0)))
+	return _map_backend_position_to_world_axial(backend_position)
+
+func _map_backend_position_to_world_axial(backend_position: Vector2i) -> Vector2i:
+	if terrain == null:
+		return backend_position
+	var radius: int = int(terrain.get("play_radius")) + int(terrain.get("buffer_thickness"))
+	if radius <= 0:
+		return Vector2i.ZERO
+	var normalized_x: float = clampf(float(backend_position.x) / BACKEND_GRID_MAX_INDEX, 0.0, 1.0)
+	var normalized_y: float = clampf(float(backend_position.y) / BACKEND_GRID_MAX_INDEX, 0.0, 1.0)
+	var mapped: Vector2i = Vector2i(
+		int(round(lerp(-float(radius), float(radius), normalized_x))),
+		int(round(lerp(-float(radius), float(radius), normalized_y))),
+	)
+	if bool(terrain.call("is_within_bounds", mapped)):
+		return mapped
+	return _nearest_world_axial(mapped)
+
+func _nearest_world_axial(axial: Vector2i) -> Vector2i:
+	if terrain == null:
+		return axial
+	var world_axials: Array = terrain.call("get_all_axials")
+	if world_axials.is_empty():
+		return Vector2i.ZERO
+	var best: Vector2i = world_axials[0] as Vector2i
+	var best_distance: int = int(terrain.call("axial_distance", axial, best))
+	for item: Variant in world_axials:
+		if typeof(item) != TYPE_VECTOR2I:
+			continue
+		var candidate: Vector2i = item as Vector2i
+		var distance: int = int(terrain.call("axial_distance", axial, candidate))
+		if distance < best_distance:
+			best = candidate
+			best_distance = distance
+	return best
 
 func _sync_network_obstacles(data: Array) -> void:
-	for entry: Dictionary in data:
-		var axial: Vector2i = Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0)))
-		if world: world.call("set_blocked", axial, true)
+	for item: Variant in data:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = item as Dictionary
+		var backend_position: Vector2i = Vector2i.ZERO
+		if entry.has("position") and typeof(entry.get("position")) == TYPE_DICTIONARY:
+			var position: Dictionary = entry.get("position") as Dictionary
+			backend_position = Vector2i(int(position.get("x", 0)), int(position.get("y", 0)))
+		else:
+			backend_position = Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0)))
+		var axial: Vector2i = _map_backend_position_to_world_axial(backend_position)
+		if world:
+			world.call("set_blocked", axial, true)
 
 func _focus_camera_on_player(p: Node3D) -> void:
 	if p and camera_mgr: camera_mgr.call("focus_on_position", p.global_position)

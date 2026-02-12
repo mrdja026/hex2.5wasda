@@ -150,6 +150,17 @@ func get_adjacent_entity_names(origin: Vector2i, players: Array, exclude: Node) 
 func create_tree() -> Node3D: return _create_tree()
 func create_rock() -> Node3D: return _create_rock()
 
+func spawn_network_prop(prop_type: String, axial: Vector2i, is_blocking: bool) -> void:
+	if props_container == null or terrain == null:
+		return
+	if _prop_labels.has(axial):
+		return
+	var prop: Node3D = _create_tree() if prop_type == "tree" else _create_rock()
+	place_prop(prop, axial, false)
+	_prop_labels[axial] = "Tree" if prop_type == "tree" else "Rock"
+	if is_blocking:
+		_blocked_axials[axial] = true
+
 func place_prop(prop: Node3D, axial: Vector2i, randomize_transform: bool) -> void:
 	if prop == null or terrain == null: return
 	props_container.add_child(prop)

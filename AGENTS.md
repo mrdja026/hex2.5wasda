@@ -96,3 +96,17 @@ res://
 *   **Ignore Files:** Ensure `.godot/`, `*.tmp`, and local `export_presets.cfg` are in `.gitignore`.
 *   **Text-Based**: Keep scenes and resources in .tscn and .tres format (text-based) to allow for Git diffs.
 <!-- OPENSPEC:END -->
+
+## Learned Lessons (Networked Game)
+
+- CRITICAL: Frontend game rendering and state must remain in parity with Godot behavior and backend snapshot contracts; do not introduce changes that break cross-client sync.
+- In network mode, render battlefield props/buffer from backend snapshot payload; do not locally randomize battlefield state.
+- Keep WebSocket state and heartbeat visible in join/debug UI to avoid silent join failures.
+- Write network diagnostics to project `logs/` so sync issues can be verified post-run.
+- Map backend 64x64 coordinates deterministically to local hex world bounds for consistent rendering.
+
+## Technical Debt
+
+- Add lightweight runtime payload shape checks in Godot for `game_snapshot`/`game_state_update`.
+- Reduce script size in `scripts/Game.gd` by extracting network battlefield sync helpers into a dedicated script.
+- Add integration smoke tests for “join -> snapshot -> render players/props/buffer -> move” flow.

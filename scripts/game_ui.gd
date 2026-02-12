@@ -34,6 +34,7 @@ func log_system(text: String) -> void:
 
 func log_network(text: String) -> void:
 	_append_log(_network_log, text, NETWORK_LOG_LINES)
+	_log_to_file("network", text)
 
 func update_turn_panel_offline(active: Node, target: Node, player_count: int) -> void:
 	if turn_label == null: return
@@ -104,9 +105,33 @@ func update_system_panel(rig: Node3D) -> void:
 	lines.append("WASD/LMB: Move | J: Attack | K: Heal | Space: End")
 	system_label.text = "\n".join(lines)
 
-func update_network_console(url: String, user_id: int, channel_id: String, active_turn: int) -> void:
+func update_network_console(
+	url: String,
+	user_id: int,
+	channel_id: String,
+	active_turn: int,
+	is_online: bool = false,
+	human_count: int = 0,
+	heartbeat_ok: bool = true,
+	heartbeat_latency_ms: int = -1,
+	heartbeat_missed_count: int = 0
+) -> void:
 	if network_console_label == null: return
-	var lines: Array[String] = ["Network Console", "URL: %s" % url, "User: %s | Channel: %s" % [user_id, channel_id], "Active Turn: %s" % active_turn]
+	var presence_text: String = "ONLINE" if is_online else "OFFLINE"
+	var heartbeat_text: String = "OK"
+	if not heartbeat_ok:
+		heartbeat_text = "STALE (%s missed)" % heartbeat_missed_count
+	elif heartbeat_latency_ms >= 0:
+		heartbeat_text = "OK (%sms)" % heartbeat_latency_ms
+	var lines: Array[String] = [
+		"Network Console",
+		"URL: %s" % url,
+		"User: %s | Channel: %s" % [user_id, channel_id],
+		"Active Turn: %s" % active_turn,
+		"Presence: %s" % presence_text,
+		"Humans in channel: %s" % human_count,
+		"WS Heartbeat: %s" % heartbeat_text,
+	]
 	lines.append("--- Connectivity ---")
 	if _network_log.is_empty(): lines.append("(no events)")
 	else: lines.append_array(_network_log)
@@ -119,3 +144,10 @@ func _append_log(log: Array[String], text: String, max_lines: int) -> void:
 	if text.is_empty(): return
 	log.append(text)
 	while log.size() > max_lines: log.pop_front()
+
+func _log_to_file(source: String, text: String) -> void:
+	if text.is_empty():
+		return
+	var logger: Node = get_node_or_null("/root/GameLogger")
+	if logger and logger.has_method("log_line"):
+		logger.call("log_line", source, text)

@@ -143,7 +143,7 @@ func get_adjacent_entity_names(origin: Vector2i, players: Array[PlayerUnit], exc
 			continue
 		var other_axial: Vector2i = other.axial_position
 		if terrain.axial_distance(origin, other_axial) == 1:
-			names.append("P%s" % other.player_id)
+			names.append(other.get_display_name())
 	for axial: Vector2i in _prop_labels:
 		if terrain.axial_distance(origin, axial) == 1:
 			names.append(_prop_labels[axial] as String)

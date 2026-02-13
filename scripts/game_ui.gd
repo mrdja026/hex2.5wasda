@@ -1,5 +1,5 @@
 ## Manages the game's UI elements, logging, and panels.
-# class_name GameUI
+class_name GameUI
 extends Node
 
 const MAX_LOG_LINES: int = 6

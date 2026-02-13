@@ -1,5 +1,5 @@
 ## Manages the network connection to the game backend.
-# class_name GameNetworkClient
+class_name GameNetworkClient
 extends Node
 
 signal snapshot_received(snapshot: Dictionary)
@@ -13,6 +13,7 @@ const DEFAULT_BASE_URL: String = "http://localhost:8002"
 const FALLBACK_BASE_URL: String = "http://127.0.0.1:8002"
 const ENV_BASE_URL: StringName = &"GAME_BACKEND_URL"
 const HEARTBEAT_INTERVAL_SEC: float = 10.0
+const WS_POLL_INTERVAL_SEC: float = 0.05  # 20Hz polling instead of 60Hz
 
 var base_url: String = DEFAULT_BASE_URL
 var user_id: int = 0
@@ -21,14 +22,14 @@ var channel_id: int = -1
 var username: String = ""
 
 @onready var _http: HTTPRequest = HTTPRequest.new()
-# _command_http and _poll_http are removed as we use WS now
+var _ws_poll_timer: Timer
+var _heartbeat_timer: Timer
 
 var _ws: WebSocketPeer
 var _channel_id: int = -1
 var _is_connecting: bool = false
 var _last_ws_state: int = WebSocketPeer.STATE_CLOSED
 var _debug_heartbeat_enabled: bool = false
-var _heartbeat_elapsed: float = 0.0
 var _awaiting_pong: bool = false
 var _last_ping_sent_ms: int = 0
 var _missed_pongs: int = 0
@@ -37,8 +38,23 @@ func _ready() -> void:
 	add_child(_http)
 	base_url = _read_env_string(ENV_BASE_URL, DEFAULT_BASE_URL)
 	_http.timeout = 8.0
+	
+	# P1: Use Timer for WebSocket polling instead of _process
+	_ws_poll_timer = Timer.new()
+	_ws_poll_timer.wait_time = WS_POLL_INTERVAL_SEC
+	_ws_poll_timer.one_shot = false
+	_ws_poll_timer.timeout.connect(_on_ws_poll_timeout)
+	add_child(_ws_poll_timer)
+	
+	# P1: Use Timer for heartbeat instead of accumulator in _process
+	_heartbeat_timer = Timer.new()
+	_heartbeat_timer.wait_time = HEARTBEAT_INTERVAL_SEC
+	_heartbeat_timer.one_shot = false
+	_heartbeat_timer.timeout.connect(_on_heartbeat_timeout)
+	add_child(_heartbeat_timer)
 
-func _process(delta: float) -> void:
+# P1: Replaced _process polling with Timer-based polling
+func _on_ws_poll_timeout() -> void:
 	if _ws == null:
 		return
 	_ws.poll()
@@ -51,11 +67,15 @@ func _process(delta: float) -> void:
 			WebSocketPeer.STATE_OPEN:
 				status_received.emit("WebSocket connected")
 				connection_state_changed.emit(true)
+				if _debug_heartbeat_enabled and _heartbeat_timer.is_stopped():
+					_heartbeat_timer.start()
 			WebSocketPeer.STATE_CLOSING:
 				status_received.emit("WebSocket closing")
 			WebSocketPeer.STATE_CLOSED:
 				status_received.emit("WebSocket closed")
 				connection_state_changed.emit(false)
+				_heartbeat_timer.stop()
+				_reset_heartbeat_state()
 	if state == WebSocketPeer.STATE_OPEN:
 		while _ws.get_available_packet_count() > 0:
 			var packet: PackedByteArray = _ws.get_packet()
@@ -64,19 +84,23 @@ func _process(delta: float) -> void:
 			if typeof(data) != TYPE_DICTIONARY:
 				continue
 			_handle_socket_message(data as Dictionary)
-		_tick_heartbeat(delta)
-	elif state == WebSocketPeer.STATE_CLOSED:
-		# Simple reconnect logic could go here
-		_reset_heartbeat_state()
+
+# P1: Timer-based heartbeat instead of accumulator
+func _on_heartbeat_timeout() -> void:
+	if not _debug_heartbeat_enabled:
+		return
+	_send_heartbeat_ping()
 
 func set_debug_heartbeat_enabled(enabled: bool) -> void:
 	_debug_heartbeat_enabled = enabled
-	_heartbeat_elapsed = 0.0
 	if not enabled:
+		_heartbeat_timer.stop()
 		_reset_heartbeat_state()
 		status_received.emit("Heartbeat disabled")
 		return
 	status_received.emit("Heartbeat enabled (%ss interval)" % int(HEARTBEAT_INTERVAL_SEC))
+	if _ws != null and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
+		_heartbeat_timer.start()
 
 func connect_to_game() -> void:
 	if _is_connecting:
@@ -205,6 +229,7 @@ func _connect_websocket() -> void:
 		connection_state_changed.emit(false)
 		return
 	_last_ws_state = WebSocketPeer.STATE_CONNECTING
+	_ws_poll_timer.start()  # P1: Start polling timer when WS connects
 	status_received.emit("Waiting for server snapshot")
 
 func _handle_socket_message(data: Dictionary) -> void:
@@ -240,14 +265,7 @@ func _handle_socket_message(data: Dictionary) -> void:
 	elif message_type == "pong":
 		_handle_heartbeat_pong(payload)
 
-func _tick_heartbeat(delta: float) -> void:
-	if not _debug_heartbeat_enabled:
-		return
-	_heartbeat_elapsed += delta
-	if _heartbeat_elapsed < HEARTBEAT_INTERVAL_SEC:
-		return
-	_heartbeat_elapsed = 0.0
-	_send_heartbeat_ping()
+# P1: _tick_heartbeat removed - replaced by _on_heartbeat_timeout Timer callback
 
 func _send_heartbeat_ping() -> void:
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
@@ -285,7 +303,6 @@ func _handle_heartbeat_pong(payload: Dictionary) -> void:
 		status_received.emit("Heartbeat OK")
 
 func _reset_heartbeat_state() -> void:
-	_heartbeat_elapsed = 0.0
 	_awaiting_pong = false
 	_last_ping_sent_ms = 0
 	_missed_pongs = 0

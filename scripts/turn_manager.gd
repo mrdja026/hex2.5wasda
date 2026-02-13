@@ -1,4 +1,5 @@
 ## Manages the turn-based logic, including player registration and action tracking.
+class_name TurnManager
 extends Node
 
 signal active_player_changed(player: Node)

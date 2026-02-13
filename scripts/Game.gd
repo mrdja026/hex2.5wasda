@@ -87,6 +87,8 @@ func _ready() -> void:
 		turn_manager.active_player_changed.connect(_on_active_player_changed)
 	
 	if not _use_networked_game:
+		if terrain:
+			terrain.build()
 		_spawn_initial_players()
 		if world:
 			world.spawn_initial_props(tree_count, rock_count)
@@ -119,6 +121,10 @@ func _ensure_input_map() -> void:
 	_ensure_action("move_down", KEY_S)
 	_ensure_action("move_left", KEY_A)
 	_ensure_action("move_right", KEY_D)
+	_ensure_action("move_nw", KEY_Q)
+	_ensure_action("move_ne", KEY_E)
+	_ensure_action("move_sw", KEY_Z)
+	_ensure_action("move_se", KEY_C)
 	_ensure_action("action_attack", KEY_J)
 	_ensure_action("action_heal", KEY_K)
 	_ensure_action("target_next", KEY_TAB)
@@ -456,10 +462,22 @@ func _on_debug_menu_id_pressed(id: int) -> void:
 func _handle_network_input(event: InputEvent) -> void:
 	if not _is_network_turn() or _network == null:
 		return
-	if event.is_action_pressed("move_up"): _network.send_command("move_up")
-	elif event.is_action_pressed("move_down"): _network.send_command("move_down")
-	elif event.is_action_pressed("move_left"): _network.send_command("move_left")
-	elif event.is_action_pressed("move_right"): _network.send_command("move_right")
+	if event.is_action_pressed("move_up"):
+		_network.send_command("move_n")
+	elif event.is_action_pressed("move_down"):
+		_network.send_command("move_s")
+	elif event.is_action_pressed("move_left"):
+		_network.send_command("move_sw")
+	elif event.is_action_pressed("move_right"):
+		_network.send_command("move_se")
+	elif event.is_action_pressed("move_nw"):
+		_network.send_command("move_nw")
+	elif event.is_action_pressed("move_ne"):
+		_network.send_command("move_ne")
+	elif event.is_action_pressed("move_sw"):
+		_network.send_command("move_sw")
+	elif event.is_action_pressed("move_se"):
+		_network.send_command("move_se")
 	elif event.is_action_pressed("action_attack"):
 		var target_username: String = ""
 		if _current_target != null and _current_target.has_method("get"):
@@ -894,17 +912,18 @@ func _try_mouse_move() -> void:
 			return
 		var delta: Vector2i = _hover_axial - player.axial_position
 		if _use_networked_game and _network:
-			# TODO(TD-Mouse): Mouse-driven movement still feels inconsistent with axial hover + 4-command backend mapping.
-			# Map axial delta to backend move commands (4 cardinal moves for now).
 			if delta == Vector2i(0, -1):
-				_network.send_command("move_up")
-			elif delta == Vector2i(0, 1):
-				_network.send_command("move_down")
-			elif delta == Vector2i(-1, 0):
-				_network.send_command("move_left")
+				_network.send_command("move_n")
+			elif delta == Vector2i(1, -1):
+				_network.send_command("move_ne")
 			elif delta == Vector2i(1, 0):
-				_network.send_command("move_right")
-			# Other hex neighbors are currently unsupported by backend commands.
+				_network.send_command("move_se")
+			elif delta == Vector2i(0, 1):
+				_network.send_command("move_s")
+			elif delta == Vector2i(-1, 1):
+				_network.send_command("move_sw")
+			elif delta == Vector2i(-1, 0):
+				_network.send_command("move_nw")
 		else:
 			_attempt_move(player, delta)
 

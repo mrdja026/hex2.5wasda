@@ -20,8 +20,10 @@ signal players_changed(players: Array[Node3D])
 signal battlefield_changed()
 signal validation_error(message: String)
 
-# P5: Default grid size; TODO: backend should send snapshot.map.grid_max_index
-const DEFAULT_BACKEND_GRID_MAX_INDEX: float = 63.0
+# P5: Default small-arena dimensions
+const DEFAULT_BACKEND_GRID_MAX_INDEX: float = 9.0
+const DEFAULT_BACKEND_MAP_WIDTH: int = 10
+const DEFAULT_BACKEND_MAP_HEIGHT: int = 10
 
 var _terrain: HexTerrain
 var _world: GameWorld
@@ -32,6 +34,8 @@ var _ui: GameUI
 var _network_players_by_id: Dictionary = {}
 var _players: Array[Node3D] = []
 var _backend_grid_max_index: float = DEFAULT_BACKEND_GRID_MAX_INDEX
+var _backend_map_width: int = DEFAULT_BACKEND_MAP_WIDTH
+var _backend_map_height: int = DEFAULT_BACKEND_MAP_HEIGHT
 
 func setup(terrain: HexTerrain, world: GameWorld, player_container: Node3D, player_scene: PackedScene, ui: GameUI) -> void:
 	_terrain = terrain
@@ -53,6 +57,8 @@ func handle_snapshot(snapshot: Dictionary) -> void:
 	
 	# P5: Read grid_max_index from snapshot.map if backend provides it
 	_update_grid_max_index(snapshot)
+	if _terrain and snapshot.has("map") and typeof(snapshot.get("map")) == TYPE_DICTIONARY:
+		_terrain.configure_from_backend_map(snapshot.get("map") as Dictionary)
 	
 	var battlefield_payload: Dictionary = {}
 	var raw_battlefield: Variant = snapshot.get("battlefield", {})
@@ -130,25 +136,23 @@ func _validate_update(update: Dictionary) -> bool:
 # --- P5: Dynamic Grid Size ---
 
 func _update_grid_max_index(snapshot: Dictionary) -> void:
-	# TODO (backend): Add snapshot.map.grid_max_index or snapshot.map.width
-	# For now, check if map object exists and read width or grid_max_index
+	_backend_map_width = DEFAULT_BACKEND_MAP_WIDTH
+	_backend_map_height = DEFAULT_BACKEND_MAP_HEIGHT
+	_backend_grid_max_index = DEFAULT_BACKEND_GRID_MAX_INDEX
 	if snapshot.has("map"):
 		var map_data: Variant = snapshot.get("map")
 		if typeof(map_data) == TYPE_DICTIONARY:
 			var map_dict: Dictionary = map_data as Dictionary
+			if map_dict.has("width"):
+				_backend_map_width = int(map_dict.get("width", DEFAULT_BACKEND_MAP_WIDTH))
+			if map_dict.has("height"):
+				_backend_map_height = int(map_dict.get("height", DEFAULT_BACKEND_MAP_HEIGHT))
 			if map_dict.has("grid_max_index"):
 				_backend_grid_max_index = float(map_dict.get("grid_max_index", DEFAULT_BACKEND_GRID_MAX_INDEX))
-				if _ui:
-					_ui.log_network("Grid size read from snapshot: %s" % _backend_grid_max_index)
-				return
-			if map_dict.has("width"):
-				_backend_grid_max_index = float(map_dict.get("width", DEFAULT_BACKEND_GRID_MAX_INDEX))
-				if _ui:
-					_ui.log_network("Grid size read from snapshot.map.width: %s" % _backend_grid_max_index)
-				return
-	
-	# Fallback to default
-	_backend_grid_max_index = DEFAULT_BACKEND_GRID_MAX_INDEX
+			else:
+				_backend_grid_max_index = float(max(_backend_map_width, _backend_map_height) - 1)
+	if _ui:
+		_ui.log_network("Map size read from snapshot: %sx%s" % [_backend_map_width, _backend_map_height])
 
 # --- Battlefield syncing ---
 
@@ -282,10 +286,15 @@ func _extract_axial_from_payload(entry: Dictionary) -> Vector2i:
 func _map_backend_position_to_world_axial(backend_position: Vector2i) -> Vector2i:
 	if _terrain == null:
 		return backend_position
-	if _backend_grid_max_index <= 0:
-		return backend_position
-	var center: int = int(_backend_grid_max_index / 2)
-	var mapped: Vector2i = Vector2i(backend_position.x - center, backend_position.y - center)
+	var row: int = backend_position.y
+	var col: int = backend_position.x
+	var q: int = col - int((row - (row & 1)) / 2)
+	var r: int = row
+	var center_col: int = int(_backend_map_width / 2)
+	var center_row: int = int(_backend_map_height / 2)
+	var center_q: int = center_col - int((center_row - (center_row & 1)) / 2)
+	var center_r: int = center_row
+	var mapped: Vector2i = Vector2i(q - center_q, r - center_r)
 	if _terrain.is_within_bounds(mapped):
 		return mapped
 	return _nearest_world_axial(mapped)

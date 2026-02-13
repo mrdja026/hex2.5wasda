@@ -1,5 +1,5 @@
 ## Represents a unit in the game, managing its health, model, and animations.
-# class_name PlayerUnit
+class_name PlayerUnit
 extends Node3D
 
 signal health_changed(current: int, maximum: int)
@@ -11,6 +11,7 @@ signal health_changed(current: int, maximum: int)
 @export var attack_damage: int = 3
 @export var heal_amount: int = 2
 @export var health_bar_offset: Vector3 = Vector3(0.0, 1.6, 0.0)
+@export var backend_username: String = ""  # Backend username (for network targeting)
 
 @onready var model: Node3D = $Model
 @onready var animation_player: AnimationPlayer = $AnimationPlayer
@@ -89,7 +90,9 @@ func is_alive() -> bool:
 func _apply_color() -> void:
 	if model == null:
 		return
-	_base_material = StandardMaterial3D.new()
+	if _base_material == null:
+		_base_material = StandardMaterial3D.new()
+		_base_material.roughness = 0.9
 	if _has_npc_flag:
 		_base_material.albedo_color = Color(0.2, 0.45, 0.9) if _is_npc else Color(0.9, 0.2, 0.2)
 	else:

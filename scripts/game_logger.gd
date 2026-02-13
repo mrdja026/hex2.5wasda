@@ -1,7 +1,8 @@
 ## Lightweight file logger for game network diagnostics.
 extends Node
 
-const LOG_DIR_RES: String = "res://logs"
+# Use user:// for exported builds (res:// is typically not writable).
+const LOG_DIR_RES: String = "user://logs"
 
 var _log_file: FileAccess
 var _log_path: String = ""

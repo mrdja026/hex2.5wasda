@@ -1,5 +1,5 @@
 ## Manages the hexagonal terrain generation, materials, and coordinate conversion.
-# class_name HexTerrain
+class_name HexTerrain
 extends Node3D
 
 @export var play_radius: int = 4

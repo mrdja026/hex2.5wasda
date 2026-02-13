@@ -34,6 +34,7 @@ var _debug_heartbeat_enabled: bool = false
 var _awaiting_pong: bool = false
 var _last_ping_sent_ms: int = 0
 var _missed_pongs: int = 0
+var _game_ready: bool = false
 
 func _ready() -> void:
 	add_child(_http)
@@ -67,6 +68,8 @@ func _on_ws_poll_timeout() -> void:
 				status_received.emit("WebSocket connecting")
 			WebSocketPeer.STATE_OPEN:
 				status_received.emit("WebSocket connected")
+				_game_ready = false
+				_send_game_join_request()
 				connection_state_changed.emit(true)
 				if _debug_heartbeat_enabled and _heartbeat_timer.is_stopped():
 					_heartbeat_timer.start()
@@ -74,6 +77,7 @@ func _on_ws_poll_timeout() -> void:
 				status_received.emit("WebSocket closing")
 			WebSocketPeer.STATE_CLOSED:
 				status_received.emit("WebSocket closed")
+				_game_ready = false
 				connection_state_changed.emit(false)
 				_heartbeat_timer.stop()
 				_reset_heartbeat_state()
@@ -107,12 +111,16 @@ func connect_to_game() -> void:
 	if _is_connecting:
 		return
 	_is_connecting = true
+	_game_ready = false
 	status_received.emit("Starting connection flow")
 	_call_connect_flow()
 
 func send_command(command: String, target_username: String = "", force: bool = false) -> void:
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		error_received.emit("Not connected to game server")
+		return
+	if not _game_ready:
+		error_received.emit("Game session not ready (awaiting game_join)")
 		return
 	if _channel_id <= 0:
 		error_received.emit("Game channel not joined")
@@ -230,8 +238,25 @@ func _connect_websocket() -> void:
 		connection_state_changed.emit(false)
 		return
 	_last_ws_state = WebSocketPeer.STATE_CONNECTING
+	_game_ready = false
 	_ws_poll_timer.start()  # P1: Start polling timer when WS connects
-	status_received.emit("Waiting for server snapshot")
+	status_received.emit("Waiting for game_join ack")
+
+func _send_game_join_request() -> void:
+	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	if _channel_id <= 0:
+		error_received.emit("Cannot game_join without channel")
+		return
+	_ws.send_text(
+		JSON.stringify(
+			{
+				"type": "game_join",
+				"channel_id": _channel_id,
+			}
+		)
+	)
+	status_received.emit("game_join sent")
 
 func _handle_socket_message(data: Dictionary) -> void:
 	var message_type: String = str(data.get("type", ""))
@@ -242,6 +267,7 @@ func _handle_socket_message(data: Dictionary) -> void:
 			payload = p as Dictionary
 
 	if message_type == "game_snapshot":
+		_game_ready = true
 		snapshot_received.emit(payload)
 		status_received.emit("Snapshot received")
 	elif message_type == "game_state_update":
@@ -264,6 +290,17 @@ func _handle_socket_message(data: Dictionary) -> void:
 	elif message_type == "error":
 		var msg = str(payload.get("message", "Unknown system error"))
 		error_received.emit(msg)
+	elif message_type == "game_join_ack":
+		var status_code: int = int(payload.get("status_code", 0))
+		var ready: bool = bool(payload.get("ready", false))
+		var msg: String = str(payload.get("message", ""))
+		if status_code == 200 and ready:
+			status_received.emit("game_join ok")
+			if not msg.is_empty():
+				status_received.emit(msg)
+		else:
+			_game_ready = false
+			error_received.emit(msg if not msg.is_empty() else "game_join failed")
 	elif message_type == "pong":
 		_handle_heartbeat_pong(payload)
 

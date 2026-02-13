@@ -474,6 +474,7 @@ func _handle_network_input(event: InputEvent) -> void:
 
 func _on_network_snapshot_received(snapshot: Dictionary) -> void:
 	_online_human_count = _count_human_players(snapshot.get("players", []) as Array)
+	_apply_backend_status_history(snapshot)
 	var battlefield_payload: Dictionary = snapshot.get("battlefield", {}) as Dictionary
 	if ui:
 		ui.log_network(
@@ -488,6 +489,7 @@ func _on_network_snapshot_received(snapshot: Dictionary) -> void:
 
 func _on_network_update_received(update: Dictionary) -> void:
 	_online_human_count = _count_human_players(update.get("players", []) as Array)
+	_apply_backend_status_history(update)
 	if ui:
 		ui.log_network(
 			"Update players=%s active=%s" % [
@@ -501,6 +503,8 @@ func _on_network_update_received(update: Dictionary) -> void:
 func _on_network_snapshot_applied(active_turn_user_id: int) -> void:
 	_network_active_turn_id = active_turn_user_id
 	_flush_pending_network_actions()
+	if _network:
+		_focus_camera_on_player(_get_player_by_id(_network.user_id))
 	if join_panel:
 		join_panel.visible = false
 	if join_button:
@@ -512,6 +516,8 @@ func _on_network_snapshot_applied(active_turn_user_id: int) -> void:
 func _on_network_update_applied(active_turn_user_id: int) -> void:
 	_network_active_turn_id = active_turn_user_id
 	_flush_pending_network_actions()
+	if _network:
+		_focus_camera_on_player(_get_player_by_id(_network.user_id))
 	_update_presence_badge()
 	_update_all_ui()
 
@@ -567,13 +573,18 @@ func _on_network_status_received(msg: String) -> void:
 	_update_all_ui()
 
 func _on_network_action_result_received(payload: Dictionary) -> void:
+	if payload.has("active_turn_user_id"):
+		_network_active_turn_id = int(payload.get("active_turn_user_id", _network_active_turn_id))
 	if not bool(payload.get("success", false)):
+		_update_all_ui()
 		return
 	var action_type: String = str(payload.get("action_type", ""))
 	if action_type.begins_with("move_"):
 		_pending_network_actions.append(payload.duplicate(true))
+		_update_all_ui()
 		return
 	_append_network_action_log(payload)
+	_update_all_ui()
 
 func _flush_pending_network_actions() -> void:
 	if _pending_network_actions.is_empty():
@@ -641,6 +652,31 @@ func _count_human_players(players_data: Array) -> int:
 			continue
 		count += 1
 	return count
+
+func _apply_backend_status_history(payload: Dictionary) -> void:
+	if ui == null:
+		return
+	var history: Array = payload.get("status_history", []) as Array
+	if history.is_empty():
+		return
+	var lines: Array[String] = []
+	for item: Variant in history:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = item as Dictionary
+		lines.append(_format_status_history_entry(entry))
+	ui.set_status_history(lines)
+
+func _format_status_history_entry(entry: Dictionary) -> String:
+	var event_type: String = str(entry.get("type", "status"))
+	if event_type == "action_result":
+		var action_type: String = str(entry.get("action_type", ""))
+		var executor: String = str(entry.get("executor_username", entry.get("executor_id", "?")))
+		var message: String = str(entry.get("message", ""))
+		var before_turn: String = str(entry.get("before_turn_user_id", "-"))
+		var after_turn: String = str(entry.get("after_turn_user_id", "-"))
+		return "%s %s | %s | turn %s -> %s" % [executor, action_type, message, before_turn, after_turn]
+	return str(entry.get("message", "status"))
 
 # --- UI and state helpers ---
 

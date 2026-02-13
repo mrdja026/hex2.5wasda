@@ -4,6 +4,8 @@ extends Node3D
 
 @export var play_radius: int = 32
 @export var buffer_thickness: int = 0
+@export var board_width: int = 10
+@export var board_height: int = 10
 @export var tile_size: float = 1.2
 @export var tile_height: float = 0.2
 @export var mountain_height_multiplier: float = 2.8
@@ -29,10 +31,11 @@ var _mountain_peak_secondary_material: StandardMaterial3D
 var _tiles: Array[MeshInstance3D] = []
 var _play_axials: Array[Vector2i] = []
 var _buffer_axials: Array[Vector2i] = []
+var _play_axial_lookup: Dictionary = {}
 var _total_radius: int = 0
 
 func _ready() -> void:
-	build()
+	pass
 
 func build() -> void:
 	_clear_tiles()
@@ -41,21 +44,31 @@ func build() -> void:
 	_total_radius = _get_total_radius()
 	_play_axials.clear()
 	_buffer_axials.clear()
+	_play_axial_lookup.clear()
 
-	for q: int in range(-_total_radius, _total_radius + 1):
-		for r: int in range(-_total_radius, _total_radius + 1):
-			var axial: Vector2i = Vector2i(q, r)
-			var distance: int = axial_distance(Vector2i.ZERO, axial)
-			var is_buffer: bool = buffer_thickness > 0 and distance > play_radius
-			var height: float = tile_height * mountain_height_multiplier if is_buffer else tile_height
-			var tile: MeshInstance3D = _create_tile(is_buffer, axial, height)
+	for row: int in range(board_height):
+		for col: int in range(board_width):
+			var axial: Vector2i = _offset_to_centered_axial(col, row)
+			var height: float = tile_height
+			var tile: MeshInstance3D = _create_tile(false, axial, height)
 			tile.position = axial_to_world(axial, height)
 			add_child(tile)
 			_tiles.append(tile)
-			if is_buffer:
-				_buffer_axials.append(axial)
-			else:
-				_play_axials.append(axial)
+			_play_axials.append(axial)
+			_play_axial_lookup[axial] = true
+
+func configure_from_backend_map(map_data: Dictionary) -> void:
+	var width: int = int(map_data.get("width", board_width))
+	var height: int = int(map_data.get("height", board_height))
+	if width <= 0:
+		width = 10
+	if height <= 0:
+		height = 10
+	if board_width == width and board_height == height and not _tiles.is_empty():
+		return
+	board_width = width
+	board_height = height
+	build()
 
 func axial_to_world(axial: Vector2i, height: float = tile_height) -> Vector3:
 	var q: float = float(axial.x)
@@ -76,8 +89,7 @@ func world_to_axial(world_pos: Vector3) -> Vector2i:
 	return _cube_round(qf, rf)
 
 func is_within_bounds(axial: Vector2i) -> bool:
-	var radius: int = _get_total_radius()
-	return axial.x >= -radius and axial.x <= radius and axial.y >= -radius and axial.y <= radius
+	return _play_axial_lookup.has(axial)
 
 func is_within_play_area(axial: Vector2i) -> bool:
 	return is_within_bounds(axial)
@@ -100,6 +112,15 @@ func get_tile_height(axial: Vector2i) -> float:
 	if buffer_thickness > 0 and axial_distance(Vector2i.ZERO, axial) > play_radius:
 		return tile_height * mountain_height_multiplier
 	return tile_height
+
+func _offset_to_centered_axial(col: int, row: int) -> Vector2i:
+	var q: int = col - int((row - (row & 1)) / 2)
+	var r: int = row
+	var center_col: int = int(board_width / 2)
+	var center_row: int = int(board_height / 2)
+	var center_q: int = center_col - int((center_row - (center_row & 1)) / 2)
+	var center_r: int = center_row
+	return Vector2i(q - center_q, r - center_r)
 
 func _cube_round(qf: float, rf: float) -> Vector2i:
 	var sf: float = -qf - rf
@@ -229,6 +250,7 @@ func _clear_tiles() -> void:
 	_tiles.clear()
 	_play_axials.clear()
 	_buffer_axials.clear()
+	_play_axial_lookup.clear()
 
 func _get_total_radius() -> int:
 	return max(play_radius, 0)

@@ -90,7 +90,6 @@ func _ready() -> void:
 		_spawn_initial_players()
 		if world:
 			world.spawn_initial_props(tree_count, rock_count)
-			world.spawn_buffer_props(18, 12, 30)
 		if turn_manager:
 			turn_manager.start_turns()
 		_focus_camera_on_player(_get_player_by_id(1))
@@ -457,10 +456,10 @@ func _on_debug_menu_id_pressed(id: int) -> void:
 func _handle_network_input(event: InputEvent) -> void:
 	if not _is_network_turn() or _network == null:
 		return
-	if event.is_action_pressed("move_up"): _network.send_command("move up")
-	elif event.is_action_pressed("move_down"): _network.send_command("move down")
-	elif event.is_action_pressed("move_left"): _network.send_command("move left")
-	elif event.is_action_pressed("move_right"): _network.send_command("move right")
+	if event.is_action_pressed("move_up"): _network.send_command("move_up")
+	elif event.is_action_pressed("move_down"): _network.send_command("move_down")
+	elif event.is_action_pressed("move_left"): _network.send_command("move_left")
+	elif event.is_action_pressed("move_right"): _network.send_command("move_right")
 	elif event.is_action_pressed("action_attack"):
 		var target_username: String = ""
 		if _current_target != null and _current_target.has_method("get"):
@@ -859,15 +858,16 @@ func _try_mouse_move() -> void:
 			return
 		var delta: Vector2i = _hover_axial - player.axial_position
 		if _use_networked_game and _network:
+			# TODO(TD-Mouse): Mouse-driven movement still feels inconsistent with axial hover + 4-command backend mapping.
 			# Map axial delta to backend move commands (4 cardinal moves for now).
 			if delta == Vector2i(0, -1):
-				_network.send_command("move up")
+				_network.send_command("move_up")
 			elif delta == Vector2i(0, 1):
-				_network.send_command("move down")
+				_network.send_command("move_down")
 			elif delta == Vector2i(-1, 0):
-				_network.send_command("move left")
+				_network.send_command("move_left")
 			elif delta == Vector2i(1, 0):
-				_network.send_command("move right")
+				_network.send_command("move_right")
 			# Other hex neighbors are currently unsupported by backend commands.
 		else:
 			_attempt_move(player, delta)

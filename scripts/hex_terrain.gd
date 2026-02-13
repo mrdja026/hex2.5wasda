@@ -2,8 +2,8 @@
 class_name HexTerrain
 extends Node3D
 
-@export var play_radius: int = 4
-@export var buffer_thickness: int = 4
+@export var play_radius: int = 8
+@export var buffer_thickness: int = 0
 @export var tile_size: float = 1.2
 @export var tile_height: float = 0.2
 @export var mountain_height_multiplier: float = 2.8
@@ -81,7 +81,7 @@ func is_within_bounds(axial: Vector2i) -> bool:
 	return axial_distance(Vector2i.ZERO, axial) <= _get_total_radius()
 
 func is_within_play_area(axial: Vector2i) -> bool:
-	return axial_distance(Vector2i.ZERO, axial) <= play_radius
+	return is_within_bounds(axial)
 
 func update_shader_params() -> void:
 	_update_shader_params()
@@ -230,4 +230,4 @@ func _clear_tiles() -> void:
 	_buffer_axials.clear()
 
 func _get_total_radius() -> int:
-	return max(play_radius, 0) + max(buffer_thickness, 0)
+	return max(play_radius, 0)

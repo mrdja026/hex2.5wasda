@@ -41,12 +41,8 @@ func clear_state() -> void:
 	register_buffer_tiles()
 
 func register_buffer_tiles() -> void:
+	# Buffer ring is deprecated; map bounds are fully playable.
 	_blocked_axials.clear()
-	if terrain == null:
-		return
-	var buffer_axials: Array[Vector2i] = terrain.get_buffer_axials()
-	for axial: Vector2i in buffer_axials:
-		_blocked_axials[axial] = true
 
 func is_blocked(axial: Vector2i, exclude_pos: Vector2i = Vector2i(-999, -999)) -> bool:
 	if _blocked_axials.has(axial):
@@ -82,33 +78,8 @@ func spawn_initial_props(tree_count: int, rock_count: int) -> void:
 		_place_prop_cluster(center, cluster_size, interior_radius, counts, tree_count, rock_count)
 
 func spawn_buffer_props(tree_count: int, rock_count: int, max_props: int) -> void:
-	if props_container == null or terrain == null:
-		return
-	var buffer_axials: Array[Vector2i] = terrain.get_buffer_axials()
-	buffer_axials.shuffle()
-	var placed_trees: int = 0
-	var placed_rocks: int = 0
-	var total_allowed: int = min(tree_count + rock_count, max_props)
-	for axial: Vector2i in buffer_axials:
-		if _prop_labels.has(axial):
-			continue
-		if placed_trees + placed_rocks >= total_allowed:
-			break
-		if placed_trees < tree_count and placed_rocks < rock_count:
-			if _rng.randi_range(0, 1) == 0:
-				_place_buffer_prop(_create_tree(), axial, "Tree")
-				placed_trees += 1
-			else:
-				_place_buffer_prop(_create_rock(), axial, "Rock")
-				placed_rocks += 1
-			continue
-		if placed_trees < tree_count:
-			_place_buffer_prop(_create_tree(), axial, "Tree")
-			placed_trees += 1
-			continue
-		if placed_rocks < rock_count:
-			_place_buffer_prop(_create_rock(), axial, "Rock")
-			placed_rocks += 1
+	# Buffer ring is deprecated; keep API for compatibility.
+	pass
 
 func spawn_death_effect(pos: Vector3) -> void:
 	var particles: GPUParticles3D = GPUParticles3D.new()

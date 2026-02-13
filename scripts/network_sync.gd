@@ -154,7 +154,6 @@ func _sync_battlefield(battlefield: Dictionary) -> void:
 		return
 	
 	var rendered_props: int = 0
-	var rendered_buffer: int = 0
 	var seen_axials: Dictionary = {}
 	
 	var props_data: Array = battlefield.get("props", []) as Array
@@ -176,23 +175,10 @@ func _sync_battlefield(battlefield: Dictionary) -> void:
 		var is_blocking: bool = bool(entry.get("is_blocking", true))
 		_world.spawn_network_prop(prop_type, axial, is_blocking)
 		rendered_props += 1
-	
-	var buffer_data: Dictionary = battlefield.get("buffer", {}) as Dictionary
-	var buffer_tiles: Array = buffer_data.get("tiles", []) as Array
-	for item: Variant in buffer_tiles:
-		if typeof(item) != TYPE_DICTIONARY:
-			continue
-		var entry: Dictionary = item as Dictionary
-		var backend_pos := Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0)))
-		var axial: Vector2i = _map_backend_position_to_world_axial(backend_pos)
-		if seen_axials.has(axial):
-			continue
-		_world.set_blocked(axial, true)
-		seen_axials[axial] = true
-		rendered_buffer += 1
+	# TODO(TD-Buffer): Optional backend buffer metadata is currently ignored until buffer-zone rules are redesigned.
 	
 	if _ui:
-		_ui.log_network("Battlefield rendered props=%s buffer=%s" % [rendered_props, rendered_buffer])
+		_ui.log_network("Battlefield rendered props=%s" % rendered_props)
 
 func _sync_obstacles(data: Array) -> void:
 	if _world == null:
@@ -293,7 +279,7 @@ func _extract_axial_from_payload(entry: Dictionary) -> Vector2i:
 func _map_backend_position_to_world_axial(backend_position: Vector2i) -> Vector2i:
 	if _terrain == null:
 		return backend_position
-	var radius: int = _terrain.play_radius + _terrain.buffer_thickness
+	var radius: int = _terrain.play_radius
 	if radius <= 0:
 		return Vector2i.ZERO
 	var normalized_x: float = clampf(float(backend_position.x) / _backend_grid_max_index, 0.0, 1.0)

@@ -61,6 +61,7 @@ var _current_target: PlayerUnit = null
 var _network: GameNetworkClient = null
 var _network_sync: NetworkSync = null
 var _network_active_turn_id: int = 0
+var _pending_network_actions: Array[Dictionary] = []
 var _is_ws_connected: bool = false
 var _online_human_count: int = 0
 var _heartbeat_ok: bool = true
@@ -220,6 +221,8 @@ func _connect_network_signals() -> void:
 		_network.error_received.connect(_on_network_error_received)
 	if not _network.status_received.is_connected(_on_network_status_received):
 		_network.status_received.connect(_on_network_status_received)
+	if not _network.action_result_received.is_connected(_on_network_action_result_received):
+		_network.action_result_received.connect(_on_network_action_result_received)
 	if not _network.connection_state_changed.is_connected(_on_network_connection_state_changed):
 		_network.connection_state_changed.connect(_on_network_connection_state_changed)
 	if not _network.heartbeat_status_changed.is_connected(_on_heartbeat_status_changed):
@@ -302,9 +305,10 @@ func _attempt_move(player: PlayerUnit, direction: Vector2i) -> bool:
 	player.position = terrain.axial_to_world(target_axial) + Vector3(0.0, 0.6, 0.0)
 	world.set_blocked(target_axial, true)
 	player.play_run()
-	var near: Array[String] = world.get_adjacent_entity_names(target_axial, _players, player)
+	var mover_name: String = _player_log_name(player)
+	var surroundings: String = _format_player_surroundings(player)
 	if ui:
-		ui.log_movement("P%d moved to %s. Near: %s" % [player.player_id, target_axial, near])
+		ui.log_movement("%s - to {%s}" % [mover_name, surroundings])
 		_log_system("Move ok: P%s -> %s (moves_left=%s)" % [player.player_id, target_axial, turn_manager.moves_left()])
 	if _use_networked_game:
 		if _network and player.player_id == _network.user_id:
@@ -334,7 +338,7 @@ func _perform_attack(attacker: PlayerUnit, target: PlayerUnit) -> void:
 	attacker.play_attack()
 	target.apply_damage(attacker.attack_damage)
 	if ui:
-		ui.log_combat("P%d hit P%d for %d. HP: %d/%d" % [attacker.player_id, target.player_id, attacker.attack_damage, target.health, target.max_health])
+		ui.log_combat("%s attacked %s -> %d/%d" % [_player_log_name(attacker), _player_log_name(target), target.health, target.max_health])
 	if not target.is_alive():
 		_handle_death(target)
 	if turn_manager:
@@ -346,17 +350,17 @@ func _try_heal() -> void:
 	if turn_manager:
 		player = turn_manager.get_active_player() as PlayerUnit
 	if player and turn_manager.can_use_action(player):
-		var before: int = player.health
 		player.heal_self()
 		if ui:
-			ui.log_combat("P%d healed for %d. HP: %d/%d" % [player.player_id, player.health - before, player.health, player.max_health])
+			var player_name: String = _player_log_name(player)
+			ui.log_combat("%s healed %s -> %d/%d" % [player_name, player_name, player.health, player.max_health])
 		if turn_manager:
 			turn_manager.end_turn()
 		_update_all_ui()
 
 func _handle_death(player: PlayerUnit) -> void:
 	if ui:
-		ui.log_combat("P%d was defeated!" % player.player_id)
+		ui.log_combat("%s was defeated!" % _player_log_name(player))
 	world.spawn_death_effect(player.global_position)
 	if turn_manager:
 		turn_manager.remove_player(player)
@@ -370,7 +374,7 @@ func _on_active_player_changed(player: Node) -> void:
 	var active: PlayerUnit = player as PlayerUnit
 	if active:
 		if ui:
-			ui.log_turn("Active -> P%d" % active.player_id)
+			ui.log_turn("Active -> %s" % _player_log_name(active))
 		if not _is_human(active):
 			_run_ai_turn(active)
 		else:
@@ -497,6 +501,7 @@ func _on_network_update_received(update: Dictionary) -> void:
 
 func _on_network_snapshot_applied(active_turn_user_id: int) -> void:
 	_network_active_turn_id = active_turn_user_id
+	_flush_pending_network_actions()
 	if join_panel:
 		join_panel.visible = false
 	if join_button:
@@ -507,6 +512,7 @@ func _on_network_snapshot_applied(active_turn_user_id: int) -> void:
 
 func _on_network_update_applied(active_turn_user_id: int) -> void:
 	_network_active_turn_id = active_turn_user_id
+	_flush_pending_network_actions()
 	_update_presence_badge()
 	_update_all_ui()
 
@@ -536,6 +542,7 @@ func _on_network_connection_state_changed(is_connected: bool) -> void:
 		_heartbeat_ok = false
 		_heartbeat_latency_ms = -1
 		_heartbeat_missed_count = 0
+		_pending_network_actions.clear()
 	_update_presence_badge()
 	_update_all_ui()
 
@@ -559,6 +566,71 @@ func _on_network_status_received(msg: String) -> void:
 	if join_panel and join_panel.visible:
 		_set_join_status(msg)
 	_update_all_ui()
+
+func _on_network_action_result_received(payload: Dictionary) -> void:
+	if not bool(payload.get("success", false)):
+		return
+	var action_type: String = str(payload.get("action_type", ""))
+	if action_type.begins_with("move_"):
+		_pending_network_actions.append(payload.duplicate(true))
+		return
+	_append_network_action_log(payload)
+
+func _flush_pending_network_actions() -> void:
+	if _pending_network_actions.is_empty():
+		return
+	var pending_actions: Array[Dictionary] = []
+	for pending_payload: Dictionary in _pending_network_actions:
+		pending_actions.append(pending_payload.duplicate(true))
+	_pending_network_actions.clear()
+	for payload: Dictionary in pending_actions:
+		_append_network_action_log(payload)
+
+func _append_network_action_log(payload: Dictionary) -> void:
+	if ui == null:
+		return
+	var action_type: String = str(payload.get("action_type", ""))
+	var executor_id: int = int(payload.get("executor_id", 0))
+	var target_id: int = int(payload.get("target_id", 0))
+	var executor_name: String = _resolve_action_username(payload, "executor_username", executor_id)
+	var target_name: String = _resolve_action_username(payload, "target_username", target_id)
+	if action_type.begins_with("move_"):
+		var actor: PlayerUnit = _get_player_by_id(executor_id)
+		ui.log_movement("%s - to {%s}" % [executor_name, _format_player_surroundings(actor)])
+		return
+	if action_type == "attack":
+		var target_health: int = int(payload.get("target_health", -1))
+		var target_max_health: int = int(payload.get("target_max_health", -1))
+		if target_health >= 0 and target_max_health > 0:
+			ui.log_combat("%s attacked %s -> %d/%d" % [executor_name, target_name, target_health, target_max_health])
+		else:
+			ui.log_combat("%s attacked %s" % [executor_name, target_name])
+		return
+	if action_type == "heal":
+		if target_name.is_empty():
+			target_name = executor_name
+		var healed_health: int = int(payload.get("target_health", payload.get("actor_health", -1)))
+		var healed_max_health: int = int(payload.get("target_max_health", payload.get("actor_max_health", -1)))
+		if healed_health >= 0 and healed_max_health > 0:
+			ui.log_combat("%s healed %s -> %d/%d" % [executor_name, target_name, healed_health, healed_max_health])
+		else:
+			ui.log_combat("%s did heal" % executor_name)
+		return
+	ui.log_combat("%s did %s" % [executor_name, action_type])
+
+func _resolve_action_username(payload: Dictionary, key: String, user_id: int) -> String:
+	var explicit_name: String = ""
+	var raw_name: Variant = payload.get(key, "")
+	if typeof(raw_name) == TYPE_STRING:
+		explicit_name = raw_name as String
+	if not explicit_name.is_empty():
+		return explicit_name
+	var player: PlayerUnit = _get_player_by_id(user_id)
+	if player:
+		return _player_log_name(player)
+	if user_id > 0:
+		return "P%s" % user_id
+	return "Unknown"
 
 func _count_human_players(players_data: Array) -> int:
 	var count: int = 0
@@ -598,6 +670,19 @@ func _render_join_status() -> void:
 		"ONLINE" if _is_online_presence() else "OFFLINE",
 		heartbeat_text,
 	]
+
+func _player_log_name(player: PlayerUnit) -> String:
+	if player == null:
+		return "Unknown"
+	return player.get_display_name()
+
+func _format_player_surroundings(player: PlayerUnit) -> String:
+	if player == null or world == null:
+		return "unknown"
+	var surrounding_names: Array[String] = world.get_adjacent_entity_names(player.axial_position, _players, player)
+	if surrounding_names.is_empty():
+		return "nothing nearby"
+	return ", ".join(surrounding_names)
 
 func _get_player_by_id(id: int) -> PlayerUnit:
 	for p: PlayerUnit in _players:

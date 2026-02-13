@@ -4,6 +4,7 @@ extends Node
 
 signal snapshot_received(snapshot: Dictionary)
 signal update_received(update: Dictionary)
+signal action_result_received(payload: Dictionary)
 signal error_received(message: String)
 signal status_received(message: String)
 signal connection_state_changed(is_connected: bool)
@@ -248,6 +249,7 @@ func _handle_socket_message(data: Dictionary) -> void:
 		# For now, pass it through as update
 		update_received.emit(payload)
 	elif message_type == "action_result":
+		action_result_received.emit(payload)
 		var success: bool = bool(payload.get("success", false))
 		var msg: String = str(payload.get("message", ""))
 		if not success:

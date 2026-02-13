@@ -247,8 +247,9 @@ func _sync_players(data: Array, is_full_sync: bool) -> void:
 		player.set_health(int(entry.get("health", 10)), int(entry.get("max_health", 10)))
 		if entry.has("is_npc"):
 			player.set_is_npc(bool(entry.get("is_npc", false)))
-		if entry.has("username"):
-			player.backend_username = str(entry.get("username", ""))
+		var username: String = str(entry.get("username", ""))
+		var display_name: String = str(entry.get("display_name", username))
+		player.set_backend_identity(username, display_name)
 		
 		if _world:
 			_world.set_blocked(next_axial, true)

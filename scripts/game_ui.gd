@@ -4,6 +4,7 @@ extends Node
 
 const MAX_LOG_LINES: int = 6
 const NETWORK_LOG_LINES: int = 12
+const STATUS_HISTORY_LINES: int = 10
 
 var turn_label: Label
 var combat_label: Label
@@ -17,6 +18,7 @@ var _movement_log: Array[String] = []
 var _turn_log: Array[String] = []
 var _system_log: Array[String] = []
 var _network_log: Array[String] = []
+var _status_history_log: Array[String] = []
 
 func log_combat(text: String) -> void:
 	_append_log(_combat_log, text, MAX_LOG_LINES)
@@ -30,7 +32,12 @@ func log_turn(text: String) -> void:
 	_append_log(_turn_log, text, MAX_LOG_LINES)
 
 func log_system(text: String) -> void:
-	_append_log(_system_log, text, MAX_LOG_LINES)
+	_append_log(_system_log, text, STATUS_HISTORY_LINES)
+
+func set_status_history(entries: Array[String]) -> void:
+	_status_history_log.clear()
+	for item: String in entries:
+		_append_log(_status_history_log, item, STATUS_HISTORY_LINES)
 
 func log_network(text: String) -> void:
 	_append_log(_network_log, text, NETWORK_LOG_LINES)
@@ -136,8 +143,12 @@ func update_network_console(
 	if _network_log.is_empty(): lines.append("(no events)")
 	else: lines.append_array(_network_log)
 	lines.append("--- Game Status ---")
-	if _system_log.is_empty(): lines.append("(no status)")
-	else: lines.append_array(_system_log)
+	if not _status_history_log.is_empty():
+		lines.append_array(_status_history_log)
+	elif _system_log.is_empty():
+		lines.append("(no status)")
+	else:
+		lines.append_array(_system_log)
 	network_console_label.text = "\n".join(lines)
 
 func _append_log(log: Array[String], text: String, max_lines: int) -> void:

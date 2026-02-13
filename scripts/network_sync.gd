@@ -110,6 +110,9 @@ func _validate_snapshot(snapshot: Dictionary) -> bool:
 func _validate_update(update: Dictionary) -> bool:
 	var errors: Array[String] = []
 	
+	if not update.has("active_turn_user_id"):
+		errors.append("Missing required field: active_turn_user_id")
+	
 	if not update.has("players"):
 		errors.append("Missing required field: players")
 	elif typeof(update.get("players")) != TYPE_ARRAY:
@@ -279,15 +282,10 @@ func _extract_axial_from_payload(entry: Dictionary) -> Vector2i:
 func _map_backend_position_to_world_axial(backend_position: Vector2i) -> Vector2i:
 	if _terrain == null:
 		return backend_position
-	var radius: int = _terrain.play_radius
-	if radius <= 0:
-		return Vector2i.ZERO
-	var normalized_x: float = clampf(float(backend_position.x) / _backend_grid_max_index, 0.0, 1.0)
-	var normalized_y: float = clampf(float(backend_position.y) / _backend_grid_max_index, 0.0, 1.0)
-	var mapped: Vector2i = Vector2i(
-		int(round(lerp(-float(radius), float(radius), normalized_x))),
-		int(round(lerp(-float(radius), float(radius), normalized_y))),
-	)
+	if _backend_grid_max_index <= 0:
+		return backend_position
+	var center: int = int(_backend_grid_max_index / 2)
+	var mapped: Vector2i = Vector2i(backend_position.x - center, backend_position.y - center)
 	if _terrain.is_within_bounds(mapped):
 		return mapped
 	return _nearest_world_axial(mapped)

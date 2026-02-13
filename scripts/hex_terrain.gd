@@ -2,7 +2,7 @@
 class_name HexTerrain
 extends Node3D
 
-@export var play_radius: int = 8
+@export var play_radius: int = 32
 @export var buffer_thickness: int = 0
 @export var tile_size: float = 1.2
 @export var tile_height: float = 0.2
@@ -43,12 +43,10 @@ func build() -> void:
 	_buffer_axials.clear()
 
 	for q: int in range(-_total_radius, _total_radius + 1):
-		var r_start: int = max(-_total_radius, -q - _total_radius)
-		var r_end: int = min(_total_radius, -q + _total_radius)
-		for r: int in range(r_start, r_end + 1):
+		for r: int in range(-_total_radius, _total_radius + 1):
 			var axial: Vector2i = Vector2i(q, r)
 			var distance: int = axial_distance(Vector2i.ZERO, axial)
-			var is_buffer: bool = distance > play_radius
+			var is_buffer: bool = buffer_thickness > 0 and distance > play_radius
 			var height: float = tile_height * mountain_height_multiplier if is_buffer else tile_height
 			var tile: MeshInstance3D = _create_tile(is_buffer, axial, height)
 			tile.position = axial_to_world(axial, height)
@@ -78,7 +76,8 @@ func world_to_axial(world_pos: Vector3) -> Vector2i:
 	return _cube_round(qf, rf)
 
 func is_within_bounds(axial: Vector2i) -> bool:
-	return axial_distance(Vector2i.ZERO, axial) <= _get_total_radius()
+	var radius: int = _get_total_radius()
+	return axial.x >= -radius and axial.x <= radius and axial.y >= -radius and axial.y <= radius
 
 func is_within_play_area(axial: Vector2i) -> bool:
 	return is_within_bounds(axial)
@@ -98,7 +97,9 @@ func get_buffer_axials() -> Array[Vector2i]:
 	return _buffer_axials.duplicate()
 
 func get_tile_height(axial: Vector2i) -> float:
-	return tile_height * mountain_height_multiplier if axial_distance(Vector2i.ZERO, axial) > play_radius else tile_height
+	if buffer_thickness > 0 and axial_distance(Vector2i.ZERO, axial) > play_radius:
+		return tile_height * mountain_height_multiplier
+	return tile_height
 
 func _cube_round(qf: float, rf: float) -> Vector2i:
 	var sf: float = -qf - rf

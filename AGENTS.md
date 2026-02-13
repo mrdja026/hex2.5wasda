@@ -20,7 +20,8 @@ Use read tool before writing to get the newest version.In code mode
 This guide outlines the best practices and coding standards for Godot 4.x development, formatted as a system prompt (or `Agents.md` equivalent) to guide an AI assistant or development team.
 
 ---
-
+# Aditional repos
+There is an aditional repo that is in the root of this repo and /some-kind-of-irc which is the backend as a source of truth for the godot game that is client.
 # Godot 4.x Development Standards (Agents.md)
 
 ## 1. Core Philosophy
@@ -100,6 +101,8 @@ res://
 ## Learned Lessons (Networked Game)
 
 - CRITICAL: Frontend game rendering and state must remain in parity with Godot behavior and backend snapshot contracts; do not introduce changes that break cross-client sync.
+- CRITICAL: `some-kind-of-irc/backend/tests/test_command_schema_contract.py` must always pass because it is the backend-to-Godot command contract for transport tokens.
+- CRITICAL: Both repos (Godot client and backend) must implement and emit the same transport tokens from this contract even when runtime schema validation is not yet enforced.
 - In network mode, render battlefield props/buffer from backend snapshot payload; do not locally randomize battlefield state.
 - Keep WebSocket state and heartbeat visible in join/debug UI to avoid silent join failures.
 - Write network diagnostics to project `logs/` so sync issues can be verified post-run.

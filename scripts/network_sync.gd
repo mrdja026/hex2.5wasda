@@ -13,6 +13,7 @@ const HexTerrain = preload("res://scripts/hex_terrain.gd")
 const GameWorld = preload("res://scripts/game_world.gd")
 const GameUI = preload("res://scripts/game_ui.gd")
 const PlayerUnit = preload("res://scripts/player_unit.gd")
+const NetworkProtocol = preload("res://scripts/network_protocol.gd")
 
 signal snapshot_applied(active_turn_user_id: int)
 signal update_applied(active_turn_user_id: int)
@@ -52,24 +53,25 @@ func handle_snapshot(snapshot: Dictionary) -> void:
 	if not _validate_snapshot(snapshot):
 		return
 	
-	var active_turn_id: int = int(snapshot.get("active_turn_user_id", 0))
-	var players_payload: Array = snapshot.get("players", []) as Array
+	var active_turn_id: int = int(snapshot.get(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID, 0))
+	var players_payload: Array = _array_or_empty(snapshot.get(NetworkProtocol.KEY_PLAYERS))
 	
 	# P5: Read grid_max_index from snapshot.map if backend provides it
 	_update_grid_max_index(snapshot)
-	if _terrain and snapshot.has("map") and typeof(snapshot.get("map")) == TYPE_DICTIONARY:
-		_terrain.configure_from_backend_map(snapshot.get("map") as Dictionary)
+	if _terrain and snapshot.has(NetworkProtocol.KEY_MAP):
+		var map_payload: Dictionary = _dictionary_or_empty(snapshot.get(NetworkProtocol.KEY_MAP))
+		if not map_payload.is_empty():
+			_terrain.configure_from_backend_map(map_payload)
 	
 	var battlefield_payload: Dictionary = {}
-	var raw_battlefield: Variant = snapshot.get("battlefield", {})
-	if typeof(raw_battlefield) == TYPE_DICTIONARY:
-		battlefield_payload = raw_battlefield as Dictionary
+	var raw_battlefield: Variant = snapshot.get(NetworkProtocol.KEY_BATTLEFIELD, {})
+	battlefield_payload = _dictionary_or_empty(raw_battlefield)
 	
 	if _world:
 		_world.clear_state()
 	
 	if battlefield_payload.is_empty():
-		_sync_obstacles(snapshot.get("obstacles", []) as Array)
+		_sync_obstacles(_array_or_empty(snapshot.get(NetworkProtocol.KEY_OBSTACLES)))
 	else:
 		_sync_battlefield(battlefield_payload)
 	
@@ -82,8 +84,8 @@ func handle_update(update: Dictionary) -> void:
 	if not _validate_update(update):
 		return
 	
-	var active_turn_id: int = int(update.get("active_turn_user_id", 0))
-	var players_payload: Array = update.get("players", []) as Array
+	var active_turn_id: int = int(update.get(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID, 0))
+	var players_payload: Array = _array_or_empty(update.get(NetworkProtocol.KEY_PLAYERS))
 	_sync_players(players_payload, false)
 	update_applied.emit(active_turn_id)
 
@@ -92,12 +94,12 @@ func handle_update(update: Dictionary) -> void:
 func _validate_snapshot(snapshot: Dictionary) -> bool:
 	var errors: Array[String] = []
 
-	if not snapshot.has("map"):
+	if not snapshot.has(NetworkProtocol.KEY_MAP):
 		errors.append("Missing required field: map")
-	elif typeof(snapshot.get("map")) != TYPE_DICTIONARY:
+	elif typeof(snapshot.get(NetworkProtocol.KEY_MAP)) != TYPE_DICTIONARY:
 		errors.append("Invalid type for map (expected Dictionary)")
 	else:
-		var map_data: Dictionary = snapshot.get("map") as Dictionary
+		var map_data: Dictionary = _dictionary_or_empty(snapshot.get(NetworkProtocol.KEY_MAP))
 		if not map_data.has("board_type") or typeof(map_data.get("board_type")) != TYPE_STRING:
 			errors.append("Invalid map.board_type (expected String)")
 		if not map_data.has("layout") or typeof(map_data.get("layout")) != TYPE_STRING:
@@ -109,32 +111,32 @@ func _validate_snapshot(snapshot: Dictionary) -> bool:
 		if not map_data.has("grid_max_index") or not _is_int_like(map_data.get("grid_max_index")):
 			errors.append("Invalid map.grid_max_index (expected int)")
 
-	if not snapshot.has("players"):
+	if not snapshot.has(NetworkProtocol.KEY_PLAYERS):
 		errors.append("Missing required field: players")
-	elif typeof(snapshot.get("players")) != TYPE_ARRAY:
+	elif typeof(snapshot.get(NetworkProtocol.KEY_PLAYERS)) != TYPE_ARRAY:
 		errors.append("Invalid type for players (expected Array)")
 
-	if not snapshot.has("obstacles"):
+	if not snapshot.has(NetworkProtocol.KEY_OBSTACLES):
 		errors.append("Missing required field: obstacles")
-	elif typeof(snapshot.get("obstacles")) != TYPE_ARRAY:
+	elif typeof(snapshot.get(NetworkProtocol.KEY_OBSTACLES)) != TYPE_ARRAY:
 		errors.append("Invalid type for obstacles (expected Array)")
 
-	if not snapshot.has("battlefield"):
+	if not snapshot.has(NetworkProtocol.KEY_BATTLEFIELD):
 		errors.append("Missing required field: battlefield")
-	elif typeof(snapshot.get("battlefield")) != TYPE_DICTIONARY:
+	elif typeof(snapshot.get(NetworkProtocol.KEY_BATTLEFIELD)) != TYPE_DICTIONARY:
 		errors.append("Invalid type for battlefield (expected Dictionary)")
 
-	if not snapshot.has("active_turn_user_id"):
+	if not snapshot.has(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID):
 		errors.append("Missing required field: active_turn_user_id")
 	else:
-		var turn_value: Variant = snapshot.get("active_turn_user_id")
+		var turn_value: Variant = snapshot.get(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID)
 		if not _is_int_or_null(turn_value):
 			errors.append("Invalid active_turn_user_id (expected int|null)")
 
-	if not snapshot.has("turn_context"):
+	if not snapshot.has(NetworkProtocol.KEY_TURN_CONTEXT):
 		errors.append("Missing required field: turn_context")
 	else:
-		_validate_turn_context(snapshot.get("turn_context"), errors)
+		_validate_turn_context(snapshot.get(NetworkProtocol.KEY_TURN_CONTEXT), errors)
 	
 	if not errors.is_empty():
 		var msg: String = "Snapshot validation failed: %s" % ", ".join(errors)
@@ -148,22 +150,22 @@ func _validate_snapshot(snapshot: Dictionary) -> bool:
 func _validate_update(update: Dictionary) -> bool:
 	var errors: Array[String] = []
 
-	if not update.has("active_turn_user_id"):
+	if not update.has(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID):
 		errors.append("Missing required field: active_turn_user_id")
 	else:
-		var turn_value: Variant = update.get("active_turn_user_id")
+		var turn_value: Variant = update.get(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID)
 		if not _is_int_or_null(turn_value):
 			errors.append("Invalid active_turn_user_id (expected int|null)")
 
-	if not update.has("players"):
+	if not update.has(NetworkProtocol.KEY_PLAYERS):
 		errors.append("Missing required field: players")
-	elif typeof(update.get("players")) != TYPE_ARRAY:
+	elif typeof(update.get(NetworkProtocol.KEY_PLAYERS)) != TYPE_ARRAY:
 		errors.append("Invalid type for players (expected Array)")
 
-	if not update.has("turn_context"):
+	if not update.has(NetworkProtocol.KEY_TURN_CONTEXT):
 		errors.append("Missing required field: turn_context")
 	else:
-		_validate_turn_context(update.get("turn_context"), errors)
+		_validate_turn_context(update.get(NetworkProtocol.KEY_TURN_CONTEXT), errors)
 	
 	if not errors.is_empty():
 		var msg: String = "Update validation failed: %s" % ", ".join(errors)
@@ -179,37 +181,37 @@ func _validate_turn_context(turn_context_raw: Variant, errors: Array[String]) ->
 		errors.append("Invalid turn_context (expected Dictionary)")
 		return
 
-	var turn_context: Dictionary = turn_context_raw as Dictionary
-	if not turn_context.has("actor_user_id"):
+	var turn_context: Dictionary = _dictionary_or_empty(turn_context_raw)
+	if not turn_context.has(NetworkProtocol.KEY_ACTOR_USER_ID):
 		errors.append("Missing turn_context.actor_user_id")
 	else:
-		var actor_value: Variant = turn_context.get("actor_user_id")
+		var actor_value: Variant = turn_context.get(NetworkProtocol.KEY_ACTOR_USER_ID)
 		if not _is_int_or_null(actor_value):
 			errors.append("Invalid turn_context.actor_user_id (expected int|null)")
 
-	if not turn_context.has("attackable_target_ids"):
+	if not turn_context.has(NetworkProtocol.KEY_ATTACKABLE_TARGET_IDS):
 		errors.append("Missing turn_context.attackable_target_ids")
-	elif typeof(turn_context.get("attackable_target_ids")) != TYPE_ARRAY:
+	elif typeof(turn_context.get(NetworkProtocol.KEY_ATTACKABLE_TARGET_IDS)) != TYPE_ARRAY:
 		errors.append("Invalid turn_context.attackable_target_ids (expected Array)")
 
-	if not turn_context.has("surroundings"):
+	if not turn_context.has(NetworkProtocol.KEY_SURROUNDINGS):
 		errors.append("Missing turn_context.surroundings")
-	elif typeof(turn_context.get("surroundings")) != TYPE_ARRAY:
+	elif typeof(turn_context.get(NetworkProtocol.KEY_SURROUNDINGS)) != TYPE_ARRAY:
 		errors.append("Invalid turn_context.surroundings (expected Array)")
 
-	if not turn_context.has("surroundings_diff"):
+	if not turn_context.has(NetworkProtocol.KEY_SURROUNDINGS_DIFF):
 		errors.append("Missing turn_context.surroundings_diff")
-	elif typeof(turn_context.get("surroundings_diff")) != TYPE_DICTIONARY:
+	elif typeof(turn_context.get(NetworkProtocol.KEY_SURROUNDINGS_DIFF)) != TYPE_DICTIONARY:
 		errors.append("Invalid turn_context.surroundings_diff (expected Dictionary)")
 	else:
-		var diff: Dictionary = turn_context.get("surroundings_diff") as Dictionary
-		if not diff.has("revision") or not _is_int_like(diff.get("revision")):
+		var diff: Dictionary = _dictionary_or_empty(turn_context.get(NetworkProtocol.KEY_SURROUNDINGS_DIFF))
+		if not diff.has(NetworkProtocol.KEY_REVISION) or not _is_int_like(diff.get(NetworkProtocol.KEY_REVISION)):
 			errors.append("Invalid turn_context.surroundings_diff.revision (expected int)")
-		if not diff.has("added") or typeof(diff.get("added")) != TYPE_ARRAY:
+		if not diff.has(NetworkProtocol.KEY_ADDED) or typeof(diff.get(NetworkProtocol.KEY_ADDED)) != TYPE_ARRAY:
 			errors.append("Invalid turn_context.surroundings_diff.added (expected Array)")
-		if not diff.has("removed") or typeof(diff.get("removed")) != TYPE_ARRAY:
+		if not diff.has(NetworkProtocol.KEY_REMOVED) or typeof(diff.get(NetworkProtocol.KEY_REMOVED)) != TYPE_ARRAY:
 			errors.append("Invalid turn_context.surroundings_diff.removed (expected Array)")
-		if not diff.has("changed") or typeof(diff.get("changed")) != TYPE_ARRAY:
+		if not diff.has(NetworkProtocol.KEY_CHANGED) or typeof(diff.get(NetworkProtocol.KEY_CHANGED)) != TYPE_ARRAY:
 			errors.append("Invalid turn_context.surroundings_diff.changed (expected Array)")
 
 func _is_int_like(value: Variant) -> bool:
@@ -225,6 +227,16 @@ func _is_int_or_null(value: Variant) -> bool:
 		return true
 	return _is_int_like(value)
 
+func _dictionary_or_empty(value: Variant) -> Dictionary:
+	if typeof(value) == TYPE_DICTIONARY:
+		return value
+	return {}
+
+func _array_or_empty(value: Variant) -> Array:
+	if typeof(value) == TYPE_ARRAY:
+		return value
+	return []
+
 # --- P5: Dynamic Grid Size ---
 
 func _update_grid_max_index(snapshot: Dictionary) -> void:
@@ -234,7 +246,7 @@ func _update_grid_max_index(snapshot: Dictionary) -> void:
 	if snapshot.has("map"):
 		var map_data: Variant = snapshot.get("map")
 		if typeof(map_data) == TYPE_DICTIONARY:
-			var map_dict: Dictionary = map_data as Dictionary
+			var map_dict: Dictionary = map_data
 			if map_dict.has("width"):
 				_backend_map_width = int(map_dict.get("width", DEFAULT_BACKEND_MAP_WIDTH))
 			if map_dict.has("height"):
@@ -255,14 +267,14 @@ func _sync_battlefield(battlefield: Dictionary) -> void:
 	var rendered_props: int = 0
 	var seen_axials: Dictionary = {}
 	
-	var props_data: Array = battlefield.get("props", []) as Array
+	var props_data: Array = _array_or_empty(battlefield.get("props", []))
 	for item: Variant in props_data:
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
-		var entry: Dictionary = item as Dictionary
+		var entry: Dictionary = item
 		var backend_pos: Vector2i = Vector2i.ZERO
 		if entry.has("position") and typeof(entry.get("position")) == TYPE_DICTIONARY:
-			var position: Dictionary = entry.get("position") as Dictionary
+			var position: Dictionary = entry.get("position")
 			backend_pos = Vector2i(int(position.get("x", 0)), int(position.get("y", 0)))
 		var axial: Vector2i = _map_backend_position_to_world_axial(backend_pos)
 		if seen_axials.has(axial):
@@ -285,10 +297,10 @@ func _sync_obstacles(data: Array) -> void:
 	for item: Variant in data:
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
-		var entry: Dictionary = item as Dictionary
+		var entry: Dictionary = item
 		var backend_position: Vector2i = Vector2i.ZERO
 		if entry.has("position") and typeof(entry.get("position")) == TYPE_DICTIONARY:
-			var position: Dictionary = entry.get("position") as Dictionary
+			var position: Dictionary = entry.get("position")
 			backend_position = Vector2i(int(position.get("x", 0)), int(position.get("y", 0)))
 		else:
 			backend_position = Vector2i(int(entry.get("x", 0)), int(entry.get("y", 0)))
@@ -305,7 +317,7 @@ func _sync_players(data: Array, is_full_sync: bool) -> void:
 	for item: Variant in data:
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
-		var entry: Dictionary = item as Dictionary
+		var entry: Dictionary = item
 		var user_id: int = int(entry.get("user_id", 0))
 		if user_id <= 0:
 			continue
@@ -366,7 +378,7 @@ func _extract_axial_from_payload(entry: Dictionary) -> Vector2i:
 	if entry.has("position"):
 		var raw_position: Variant = entry.get("position")
 		if typeof(raw_position) == TYPE_DICTIONARY:
-			var position: Dictionary = raw_position as Dictionary
+			var position: Dictionary = raw_position
 			backend_position = Vector2i(int(position.get("x", 0)), int(position.get("y", 0)))
 			has_position_dict = true
 	if not has_position_dict:

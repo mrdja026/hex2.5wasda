@@ -2,6 +2,8 @@
 class_name GameNetworkClient
 extends Node
 
+const NetworkProtocol = preload("res://scripts/network_protocol.gd")
+
 signal snapshot_received(snapshot: Dictionary)
 signal update_received(update: Dictionary)
 signal action_result_received(payload: Dictionary)
@@ -88,7 +90,7 @@ func _on_ws_poll_timeout() -> void:
 			var data: Variant = JSON.parse_string(text)
 			if typeof(data) != TYPE_DICTIONARY:
 				continue
-			_handle_socket_message(data as Dictionary)
+			_handle_socket_message(data)
 
 # P1: Timer-based heartbeat instead of accumulator
 func _on_heartbeat_timeout() -> void:
@@ -127,12 +129,12 @@ func send_command(command: String, target_username: String = "", force: bool = f
 		return
 	
 	var payload: Dictionary = {
-		"type": "game_command",
-		"channel_id": _channel_id,
-		"payload": {
-			"command": command,
-			"target_username": target_username if not target_username.is_empty() else null,
-			"timestamp": int(Time.get_unix_time_from_system() * 1000.0)
+		String(NetworkProtocol.KEY_TYPE): String(NetworkProtocol.MSG_GAME_COMMAND),
+		String(NetworkProtocol.KEY_CHANNEL_ID): _channel_id,
+		String(NetworkProtocol.KEY_PAYLOAD): {
+			String(NetworkProtocol.KEY_COMMAND): command,
+			String(NetworkProtocol.KEY_TARGET_USERNAME): target_username if not target_username.is_empty() else null,
+			String(NetworkProtocol.KEY_TIMESTAMP): int(Time.get_unix_time_from_system() * 1000.0)
 		}
 	}
 	_ws.send_text(JSON.stringify(payload))
@@ -158,7 +160,7 @@ func _connect_flow() -> void:
 		_is_connecting = false
 		error_received.emit("Invalid auth response")
 		return
-	var data_dict := data as Dictionary
+	var data_dict: Dictionary = data
 	var access_token: String = str(data_dict.get("access_token", ""))
 	var token_type: String = str(data_dict.get("token_type", "bearer")).to_lower()
 	if access_token.is_empty():
@@ -251,54 +253,51 @@ func _send_game_join_request() -> void:
 	_ws.send_text(
 		JSON.stringify(
 			{
-				"type": "game_join",
-				"channel_id": _channel_id,
+				String(NetworkProtocol.KEY_TYPE): String(NetworkProtocol.MSG_GAME_JOIN),
+				String(NetworkProtocol.KEY_CHANNEL_ID): _channel_id,
 			}
 		)
 	)
 	status_received.emit("game_join sent")
 
 func _handle_socket_message(data: Dictionary) -> void:
-	var message_type: String = str(data.get("type", ""))
-	var payload: Dictionary = {}
-	if data.has("payload"):
-		var p = data.get("payload")
-		if typeof(p) == TYPE_DICTIONARY:
-			payload = p as Dictionary
+	var message_type: String = str(data.get(NetworkProtocol.KEY_TYPE, ""))
+	var payload: Dictionary = _dictionary_or_empty(data.get(NetworkProtocol.KEY_PAYLOAD))
 
-	if message_type == "game_snapshot":
+	if message_type == String(NetworkProtocol.MSG_GAME_SNAPSHOT):
 		_game_ready = true
 		snapshot_received.emit(payload)
 		status_received.emit("Snapshot received")
-	elif message_type == "game_state_update":
+	elif message_type == String(NetworkProtocol.MSG_GAME_STATE_UPDATE):
 		# Merge logic could happen here or in game_world.gd
 		# For now, pass it through as update
 		update_received.emit(payload)
-	elif message_type == "action_result":
+	elif message_type == String(NetworkProtocol.MSG_ACTION_RESULT):
 		var missing_action_fields: Array[String] = _missing_action_result_required_fields(payload)
 		if not missing_action_fields.is_empty():
 			status_received.emit("WARN: malformed action_result missing: %s" % ", ".join(missing_action_fields))
 			action_result_received.emit(payload)
 			return
 		action_result_received.emit(payload)
-		var success: bool = bool(payload.get("success", false))
-		var msg: String = str(payload.get("message", ""))
+		var success: bool = bool(payload.get(NetworkProtocol.KEY_SUCCESS, false))
+		var msg: String = str(payload.get(NetworkProtocol.KEY_MESSAGE, ""))
 		if not success:
-			var error_obj = payload.get("error")
+			var error_obj: Variant = payload.get(NetworkProtocol.KEY_ERROR)
 			var error_text = "Unknown error"
 			if typeof(error_obj) == TYPE_DICTIONARY:
-				error_text = str((error_obj as Dictionary).get("message", "Unknown error"))
+				var error_data: Dictionary = error_obj
+				error_text = str(error_data.get(NetworkProtocol.KEY_MESSAGE, "Unknown error"))
 			error_received.emit(error_text)
 		else:
 			if not msg.is_empty():
 				status_received.emit(msg)
-	elif message_type == "error":
-		var msg = str(payload.get("message", "Unknown system error"))
+	elif message_type == String(NetworkProtocol.MSG_ERROR):
+		var msg: String = str(payload.get(NetworkProtocol.KEY_MESSAGE, "Unknown system error"))
 		error_received.emit(msg)
-	elif message_type == "game_join_ack":
+	elif message_type == String(NetworkProtocol.MSG_GAME_JOIN_ACK):
 		var status_code: int = int(payload.get("status_code", 0))
 		var ready: bool = bool(payload.get("ready", false))
-		var msg: String = str(payload.get("message", ""))
+		var msg: String = str(payload.get(NetworkProtocol.KEY_MESSAGE, ""))
 		if status_code == 200 and ready:
 			status_received.emit("game_join ok")
 			if not msg.is_empty():
@@ -306,20 +305,25 @@ func _handle_socket_message(data: Dictionary) -> void:
 		else:
 			_game_ready = false
 			error_received.emit(msg if not msg.is_empty() else "game_join failed")
-	elif message_type == "pong":
+	elif message_type == String(NetworkProtocol.MSG_PONG):
 		_handle_heartbeat_pong(payload)
 
 func _missing_action_result_required_fields(payload: Dictionary) -> Array[String]:
 	var missing: Array[String] = []
-	if not payload.has("success"):
-		missing.append("success")
-	if not payload.has("action_type"):
-		missing.append("action_type")
-	if not payload.has("executor_id"):
-		missing.append("executor_id")
-	if not payload.has("active_turn_user_id"):
-		missing.append("active_turn_user_id")
+	if not payload.has(NetworkProtocol.KEY_SUCCESS):
+		missing.append(String(NetworkProtocol.KEY_SUCCESS))
+	if not payload.has(NetworkProtocol.KEY_ACTION_TYPE):
+		missing.append(String(NetworkProtocol.KEY_ACTION_TYPE))
+	if not payload.has(NetworkProtocol.KEY_EXECUTOR_ID):
+		missing.append(String(NetworkProtocol.KEY_EXECUTOR_ID))
+	if not payload.has(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID):
+		missing.append(String(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID))
 	return missing
+
+func _dictionary_or_empty(value: Variant) -> Dictionary:
+	if typeof(value) == TYPE_DICTIONARY:
+		return value
+	return {}
 
 # P1: _tick_heartbeat removed - replaced by _on_heartbeat_timeout Timer callback
 
@@ -336,8 +340,8 @@ func _send_heartbeat_ping() -> void:
 	_ws.send_text(
 		JSON.stringify(
 			{
-				"type": "ping",
-				"payload": {
+				String(NetworkProtocol.KEY_TYPE): String(NetworkProtocol.MSG_PING),
+				String(NetworkProtocol.KEY_PAYLOAD): {
 					"sent_at_ms": _last_ping_sent_ms,
 				}
 			}

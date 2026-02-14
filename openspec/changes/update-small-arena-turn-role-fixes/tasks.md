@@ -32,3 +32,6 @@
 ## 7. Contract Validation
 - [ ] 7.1 Ensure backend command schema contract test remains green (`some-kind-of-irc/backend/tests/test_command_schema_contract.py`).
 - [ ] 7.2 Add/update backend tests for role assignment, fairness, budget limits, refresh timing, and NPC loop behavior.
+
+## 8. Warp Findings Closure
+- [x] 8.1 Close transport-contract spike follow-up (int timestamp normalization, strict snapshot/update payload checks, action_result required-field warnings, and turn-context authority wiring).

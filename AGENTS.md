@@ -103,6 +103,11 @@ res://
 - CRITICAL: Frontend game rendering and state must remain in parity with Godot behavior and backend snapshot contracts; do not introduce changes that break cross-client sync.
 - CRITICAL: `some-kind-of-irc/backend/tests/test_command_schema_contract.py` must always pass because it is the backend-to-Godot command contract for transport tokens.
 - CRITICAL: Both repos (Godot client and backend) must implement and emit the same transport tokens from this contract even when runtime schema validation is not yet enforced.
+- CRITICAL: Godot `game_command.payload.timestamp` must be sent as integer milliseconds (not float seconds) to stay aligned with `external_schemas/commands.json`.
+- CRITICAL: Godot must enforce strict required fields for `game_snapshot` and `game_state_update` payloads (including `turn_context` and snapshot map metadata keys).
+- CRITICAL: Numeric fields in network payloads may arrive as int-like floats after JSON parse; validation should accept int-like numeric values to avoid false negatives.
+- CRITICAL: `action_result` payloads should include `success`, `action_type`, `executor_id`, and `active_turn_user_id`; malformed events should be logged clearly without crashing gameplay flow.
+- Keep backend authoritative turn context (`attackable_target_ids` + surroundings diff) for target validity and client-side target invalidation.
 - In network mode, render battlefield props/buffer from backend snapshot payload; do not locally randomize battlefield state.
 - Keep WebSocket state and heartbeat visible in join/debug UI to avoid silent join failures.
 - Write network diagnostics to project `logs/` so sync issues can be verified post-run.

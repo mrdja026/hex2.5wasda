@@ -132,7 +132,7 @@ func send_command(command: String, target_username: String = "", force: bool = f
 		"payload": {
 			"command": command,
 			"target_username": target_username if not target_username.is_empty() else null,
-			"timestamp": Time.get_unix_time_from_system()
+			"timestamp": int(Time.get_unix_time_from_system() * 1000.0)
 		}
 	}
 	_ws.send_text(JSON.stringify(payload))
@@ -275,6 +275,11 @@ func _handle_socket_message(data: Dictionary) -> void:
 		# For now, pass it through as update
 		update_received.emit(payload)
 	elif message_type == "action_result":
+		var missing_action_fields: Array[String] = _missing_action_result_required_fields(payload)
+		if not missing_action_fields.is_empty():
+			status_received.emit("WARN: malformed action_result missing: %s" % ", ".join(missing_action_fields))
+			action_result_received.emit(payload)
+			return
 		action_result_received.emit(payload)
 		var success: bool = bool(payload.get("success", false))
 		var msg: String = str(payload.get("message", ""))
@@ -303,6 +308,18 @@ func _handle_socket_message(data: Dictionary) -> void:
 			error_received.emit(msg if not msg.is_empty() else "game_join failed")
 	elif message_type == "pong":
 		_handle_heartbeat_pong(payload)
+
+func _missing_action_result_required_fields(payload: Dictionary) -> Array[String]:
+	var missing: Array[String] = []
+	if not payload.has("success"):
+		missing.append("success")
+	if not payload.has("action_type"):
+		missing.append("action_type")
+	if not payload.has("executor_id"):
+		missing.append("executor_id")
+	if not payload.has("active_turn_user_id"):
+		missing.append("active_turn_user_id")
+	return missing
 
 # P1: _tick_heartbeat removed - replaced by _on_heartbeat_timeout Timer callback
 

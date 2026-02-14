@@ -91,18 +91,50 @@ func handle_update(update: Dictionary) -> void:
 
 func _validate_snapshot(snapshot: Dictionary) -> bool:
 	var errors: Array[String] = []
-	
+
+	if not snapshot.has("map"):
+		errors.append("Missing required field: map")
+	elif typeof(snapshot.get("map")) != TYPE_DICTIONARY:
+		errors.append("Invalid type for map (expected Dictionary)")
+	else:
+		var map_data: Dictionary = snapshot.get("map") as Dictionary
+		if not map_data.has("board_type") or typeof(map_data.get("board_type")) != TYPE_STRING:
+			errors.append("Invalid map.board_type (expected String)")
+		if not map_data.has("layout") or typeof(map_data.get("layout")) != TYPE_STRING:
+			errors.append("Invalid map.layout (expected String)")
+		if not map_data.has("width") or not _is_int_like(map_data.get("width")):
+			errors.append("Invalid map.width (expected int)")
+		if not map_data.has("height") or not _is_int_like(map_data.get("height")):
+			errors.append("Invalid map.height (expected int)")
+		if not map_data.has("grid_max_index") or not _is_int_like(map_data.get("grid_max_index")):
+			errors.append("Invalid map.grid_max_index (expected int)")
+
 	if not snapshot.has("players"):
 		errors.append("Missing required field: players")
 	elif typeof(snapshot.get("players")) != TYPE_ARRAY:
 		errors.append("Invalid type for players (expected Array)")
-	
+
+	if not snapshot.has("obstacles"):
+		errors.append("Missing required field: obstacles")
+	elif typeof(snapshot.get("obstacles")) != TYPE_ARRAY:
+		errors.append("Invalid type for obstacles (expected Array)")
+
+	if not snapshot.has("battlefield"):
+		errors.append("Missing required field: battlefield")
+	elif typeof(snapshot.get("battlefield")) != TYPE_DICTIONARY:
+		errors.append("Invalid type for battlefield (expected Dictionary)")
+
 	if not snapshot.has("active_turn_user_id"):
 		errors.append("Missing required field: active_turn_user_id")
-	
-	# battlefield or obstacles must be present
-	if not snapshot.has("battlefield") and not snapshot.has("obstacles"):
-		errors.append("Missing both battlefield and obstacles (expected at least one)")
+	else:
+		var turn_value: Variant = snapshot.get("active_turn_user_id")
+		if not _is_int_or_null(turn_value):
+			errors.append("Invalid active_turn_user_id (expected int|null)")
+
+	if not snapshot.has("turn_context"):
+		errors.append("Missing required field: turn_context")
+	else:
+		_validate_turn_context(snapshot.get("turn_context"), errors)
 	
 	if not errors.is_empty():
 		var msg: String = "Snapshot validation failed: %s" % ", ".join(errors)
@@ -115,14 +147,23 @@ func _validate_snapshot(snapshot: Dictionary) -> bool:
 
 func _validate_update(update: Dictionary) -> bool:
 	var errors: Array[String] = []
-	
+
 	if not update.has("active_turn_user_id"):
 		errors.append("Missing required field: active_turn_user_id")
-	
+	else:
+		var turn_value: Variant = update.get("active_turn_user_id")
+		if not _is_int_or_null(turn_value):
+			errors.append("Invalid active_turn_user_id (expected int|null)")
+
 	if not update.has("players"):
 		errors.append("Missing required field: players")
 	elif typeof(update.get("players")) != TYPE_ARRAY:
 		errors.append("Invalid type for players (expected Array)")
+
+	if not update.has("turn_context"):
+		errors.append("Missing required field: turn_context")
+	else:
+		_validate_turn_context(update.get("turn_context"), errors)
 	
 	if not errors.is_empty():
 		var msg: String = "Update validation failed: %s" % ", ".join(errors)
@@ -132,6 +173,57 @@ func _validate_update(update: Dictionary) -> bool:
 		return false
 	
 	return true
+
+func _validate_turn_context(turn_context_raw: Variant, errors: Array[String]) -> void:
+	if typeof(turn_context_raw) != TYPE_DICTIONARY:
+		errors.append("Invalid turn_context (expected Dictionary)")
+		return
+
+	var turn_context: Dictionary = turn_context_raw as Dictionary
+	if not turn_context.has("actor_user_id"):
+		errors.append("Missing turn_context.actor_user_id")
+	else:
+		var actor_value: Variant = turn_context.get("actor_user_id")
+		if not _is_int_or_null(actor_value):
+			errors.append("Invalid turn_context.actor_user_id (expected int|null)")
+
+	if not turn_context.has("attackable_target_ids"):
+		errors.append("Missing turn_context.attackable_target_ids")
+	elif typeof(turn_context.get("attackable_target_ids")) != TYPE_ARRAY:
+		errors.append("Invalid turn_context.attackable_target_ids (expected Array)")
+
+	if not turn_context.has("surroundings"):
+		errors.append("Missing turn_context.surroundings")
+	elif typeof(turn_context.get("surroundings")) != TYPE_ARRAY:
+		errors.append("Invalid turn_context.surroundings (expected Array)")
+
+	if not turn_context.has("surroundings_diff"):
+		errors.append("Missing turn_context.surroundings_diff")
+	elif typeof(turn_context.get("surroundings_diff")) != TYPE_DICTIONARY:
+		errors.append("Invalid turn_context.surroundings_diff (expected Dictionary)")
+	else:
+		var diff: Dictionary = turn_context.get("surroundings_diff") as Dictionary
+		if not diff.has("revision") or not _is_int_like(diff.get("revision")):
+			errors.append("Invalid turn_context.surroundings_diff.revision (expected int)")
+		if not diff.has("added") or typeof(diff.get("added")) != TYPE_ARRAY:
+			errors.append("Invalid turn_context.surroundings_diff.added (expected Array)")
+		if not diff.has("removed") or typeof(diff.get("removed")) != TYPE_ARRAY:
+			errors.append("Invalid turn_context.surroundings_diff.removed (expected Array)")
+		if not diff.has("changed") or typeof(diff.get("changed")) != TYPE_ARRAY:
+			errors.append("Invalid turn_context.surroundings_diff.changed (expected Array)")
+
+func _is_int_like(value: Variant) -> bool:
+	if typeof(value) == TYPE_INT:
+		return true
+	if typeof(value) != TYPE_FLOAT:
+		return false
+	var number: float = float(value)
+	return is_equal_approx(number, floor(number))
+
+func _is_int_or_null(value: Variant) -> bool:
+	if typeof(value) == TYPE_NIL:
+		return true
+	return _is_int_like(value)
 
 # --- P5: Dynamic Grid Size ---
 

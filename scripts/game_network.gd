@@ -1,15 +1,22 @@
 ## Manages the network connection to the game backend.
-# class_name GameNetworkClient
+class_name GameNetworkClient
 extends Node
+
+const NetworkProtocol = preload("res://scripts/network_protocol.gd")
 
 signal snapshot_received(snapshot: Dictionary)
 signal update_received(update: Dictionary)
+signal action_result_received(payload: Dictionary)
 signal error_received(message: String)
 signal status_received(message: String)
+signal connection_state_changed(is_connected: bool)
+signal heartbeat_status_changed(ok: bool, latency_ms: int, missed_count: int)
 
 const DEFAULT_BASE_URL: String = "http://localhost:8002"
 const FALLBACK_BASE_URL: String = "http://127.0.0.1:8002"
 const ENV_BASE_URL: StringName = &"GAME_BACKEND_URL"
+const HEARTBEAT_INTERVAL_SEC: float = 10.0
+const WS_POLL_INTERVAL_SEC: float = 0.05  # 20Hz polling instead of 60Hz
 
 var base_url: String = DEFAULT_BASE_URL
 var user_id: int = 0
@@ -18,73 +25,131 @@ var channel_id: int = -1
 var username: String = ""
 
 @onready var _http: HTTPRequest = HTTPRequest.new()
-@onready var _command_http: HTTPRequest = HTTPRequest.new()
-@onready var _poll_http: HTTPRequest = HTTPRequest.new()
+var _ws_poll_timer: Timer
+var _heartbeat_timer: Timer
 
-var _command_queue: Array = []
-var _command_inflight: bool = false
-var _poll_inflight: bool = false
-var _poll_elapsed: float = 0.0
-var _poll_interval: float = 4.0
 var _ws: WebSocketPeer
 var _channel_id: int = -1
 var _is_connecting: bool = false
+var _last_ws_state: int = WebSocketPeer.STATE_CLOSED
+var _debug_heartbeat_enabled: bool = false
+var _awaiting_pong: bool = false
+var _last_ping_sent_ms: int = 0
+var _missed_pongs: int = 0
+var _game_ready: bool = false
 
 func _ready() -> void:
 	add_child(_http)
-	add_child(_command_http)
-	add_child(_poll_http)
 	base_url = _read_env_string(ENV_BASE_URL, DEFAULT_BASE_URL)
 	_http.timeout = 8.0
-	_command_http.timeout = 8.0
-	_poll_http.timeout = 8.0
+	
+	# P1: Use Timer for WebSocket polling instead of _process
+	_ws_poll_timer = Timer.new()
+	_ws_poll_timer.wait_time = WS_POLL_INTERVAL_SEC
+	_ws_poll_timer.one_shot = false
+	_ws_poll_timer.timeout.connect(_on_ws_poll_timeout)
+	add_child(_ws_poll_timer)
+	
+	# P1: Use Timer for heartbeat instead of accumulator in _process
+	_heartbeat_timer = Timer.new()
+	_heartbeat_timer.wait_time = HEARTBEAT_INTERVAL_SEC
+	_heartbeat_timer.one_shot = false
+	_heartbeat_timer.timeout.connect(_on_heartbeat_timeout)
+	add_child(_heartbeat_timer)
 
-func _process(_delta: float) -> void:
+# P1: Replaced _process polling with Timer-based polling
+func _on_ws_poll_timeout() -> void:
 	if _ws == null:
-		_poll_tick(_delta)
 		return
 	_ws.poll()
-	if _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
-		_poll_tick(_delta)
+	var state = _ws.get_ready_state()
+	if state != _last_ws_state:
+		_last_ws_state = state
+		match state:
+			WebSocketPeer.STATE_CONNECTING:
+				status_received.emit("WebSocket connecting")
+			WebSocketPeer.STATE_OPEN:
+				status_received.emit("WebSocket connected")
+				_game_ready = false
+				_send_game_join_request()
+				connection_state_changed.emit(true)
+				if _debug_heartbeat_enabled and _heartbeat_timer.is_stopped():
+					_heartbeat_timer.start()
+			WebSocketPeer.STATE_CLOSING:
+				status_received.emit("WebSocket closing")
+			WebSocketPeer.STATE_CLOSED:
+				status_received.emit("WebSocket closed")
+				_game_ready = false
+				connection_state_changed.emit(false)
+				_heartbeat_timer.stop()
+				_reset_heartbeat_state()
+	if state == WebSocketPeer.STATE_OPEN:
+		while _ws.get_available_packet_count() > 0:
+			var packet: PackedByteArray = _ws.get_packet()
+			var text: String = packet.get_string_from_utf8()
+			var data: Variant = JSON.parse_string(text)
+			if typeof(data) != TYPE_DICTIONARY:
+				continue
+			_handle_socket_message(data)
+
+# P1: Timer-based heartbeat instead of accumulator
+func _on_heartbeat_timeout() -> void:
+	if not _debug_heartbeat_enabled:
 		return
-	while _ws.get_available_packet_count() > 0:
-		var packet: PackedByteArray = _ws.get_packet()
-		var text: String = packet.get_string_from_utf8()
-		var data: Variant = JSON.parse_string(text)
-		if typeof(data) != TYPE_DICTIONARY:
-			continue
-		_handle_socket_message(data as Dictionary)
-	_poll_tick(_delta)
+	_send_heartbeat_ping()
+
+func set_debug_heartbeat_enabled(enabled: bool) -> void:
+	_debug_heartbeat_enabled = enabled
+	if not enabled:
+		_heartbeat_timer.stop()
+		_reset_heartbeat_state()
+		status_received.emit("Heartbeat disabled")
+		return
+	status_received.emit("Heartbeat enabled (%ss interval)" % int(HEARTBEAT_INTERVAL_SEC))
+	if _ws != null and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
+		_heartbeat_timer.start()
 
 func connect_to_game() -> void:
 	if _is_connecting:
 		return
 	_is_connecting = true
+	_game_ready = false
+	status_received.emit("Starting connection flow")
 	_call_connect_flow()
 
 func send_command(command: String, target_username: String = "", force: bool = false) -> void:
+	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		error_received.emit("Not connected to game server")
+		return
+	if not _game_ready:
+		error_received.emit("Game session not ready (awaiting game_join)")
+		return
 	if _channel_id <= 0:
 		error_received.emit("Game channel not joined")
 		return
-	_command_queue.append({
-		"command": command,
-		"target_username": target_username,
-		"force": force,
-	})
-	_call_send_command()
+	
+	var payload: Dictionary = {
+		String(NetworkProtocol.KEY_TYPE): String(NetworkProtocol.MSG_GAME_COMMAND),
+		String(NetworkProtocol.KEY_CHANNEL_ID): _channel_id,
+		String(NetworkProtocol.KEY_PAYLOAD): {
+			String(NetworkProtocol.KEY_COMMAND): command,
+			String(NetworkProtocol.KEY_TARGET_USERNAME): target_username if not target_username.is_empty() else null,
+			String(NetworkProtocol.KEY_TIMESTAMP): int(Time.get_unix_time_from_system() * 1000.0)
+		}
+	}
+	_ws.send_text(JSON.stringify(payload))
 
 func _call_connect_flow() -> void:
 	await _connect_flow()
 
-func _call_send_command() -> void:
-	await _process_command_queue()
-
 func _connect_flow() -> void:
+	status_received.emit("Checking backend health")
 	var health_ok: bool = await _probe_backend()
 	if not health_ok:
 		_is_connecting = false
 		error_received.emit("Backend not reachable")
 		return
+	status_received.emit("Authenticating")
 	var response: Dictionary = await _auth_game_with_fallback()
 	if not response.get("ok", false):
 		_is_connecting = false
@@ -95,7 +160,7 @@ func _connect_flow() -> void:
 		_is_connecting = false
 		error_received.emit("Invalid auth response")
 		return
-	var data_dict := data as Dictionary
+	var data_dict: Dictionary = data
 	var access_token: String = str(data_dict.get("access_token", ""))
 	var token_type: String = str(data_dict.get("token_type", "bearer")).to_lower()
 	if access_token.is_empty():
@@ -112,14 +177,18 @@ func _connect_flow() -> void:
 	username = str(data_dict.get("username", ""))
 	if not username.is_empty():
 		status_received.emit("Auth OK: %s" % username)
-	var snapshot: Variant = data_dict.get("snapshot", {})
-	if typeof(snapshot) == TYPE_DICTIONARY:
-		snapshot_received.emit(snapshot as Dictionary)
+	
+	# Initial snapshot might come in auth response, but backend will send full snapshot on WS connect
 	if user_id <= 0 or _channel_id <= 0:
 		_is_connecting = false
 		error_received.emit("Invalid auth payload")
 		return
+	
+	# Join channel via HTTP to establish session (still needed for session creation)
+	status_received.emit("Joining #game")
 	await _request_json(HTTPClient.METHOD_POST, "/channels/%s/join" % _channel_id)
+	
+	status_received.emit("Opening WebSocket")
 	_connect_websocket()
 	_is_connecting = false
 
@@ -162,89 +231,141 @@ func _health_check(url_root: String) -> bool:
 func _should_try_fallback() -> bool:
 	return base_url.find("localhost") != -1
 
-func _process_command_queue() -> void:
-	if _command_inflight:
-		return
-	if _command_queue.is_empty():
-		return
-	_command_inflight = true
-	var item: Dictionary = _command_queue.pop_front() as Dictionary
-	await _send_command(item)
-	_command_inflight = false
-	await _process_command_queue()
-
-func _send_command(item: Dictionary) -> void:
-	var payload: Dictionary = {
-		"command": item.get("command", ""),
-		"channel_id": _channel_id,
-		"force": item.get("force", false),
-	}
-	var target_username: String = str(item.get("target_username", ""))
-	if not target_username.is_empty():
-		payload["target_username"] = target_username
-	var response: Dictionary = await _request_json(HTTPClient.METHOD_POST, "/game/command", payload, _command_http)
-	var status: int = int(response.get("status", 0))
-	if response.get("ok", false):
-		status_received.emit("Command OK status=%s" % status)
-		return
-	var error_text: String = "Command failed"
-	var response_data: Variant = response.get("data")
-	if typeof(response_data) == TYPE_DICTIONARY:
-		var response_dict: Dictionary = response_data as Dictionary
-		if response_dict.has("error"):
-			error_text = str(response_dict.get("error"))
-	status_received.emit("%s status=%s" % [error_text, status])
-
 func _connect_websocket() -> void:
 	var ws_url: String = _build_ws_url()
 	_ws = WebSocketPeer.new()
-	_ws.connect_to_url(ws_url)
-
-func _poll_tick(delta: float) -> void:
-	_poll_elapsed += delta
-	if _poll_elapsed < _poll_interval:
+	var err: int = _ws.connect_to_url(ws_url)
+	if err != OK:
+		error_received.emit("WebSocket connect failed (%s)" % err)
+		connection_state_changed.emit(false)
 		return
-	_poll_elapsed = 0.0
+	_last_ws_state = WebSocketPeer.STATE_CONNECTING
+	_game_ready = false
+	_ws_poll_timer.start()  # P1: Start polling timer when WS connects
+	status_received.emit("Waiting for game_join ack")
+
+func _send_game_join_request() -> void:
+	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
 	if _channel_id <= 0:
+		error_received.emit("Cannot game_join without channel")
 		return
-	if _poll_inflight:
-		return
-	_call_poll_snapshot()
-
-func _call_poll_snapshot() -> void:
-	await _poll_snapshot()
-
-func _poll_snapshot() -> void:
-	_poll_inflight = true
-	var response: Dictionary = await _request_json(
-		HTTPClient.METHOD_GET,
-		"/game/channel/%s/snapshot" % _channel_id,
-		{},
-		_poll_http,
+	_ws.send_text(
+		JSON.stringify(
+			{
+				String(NetworkProtocol.KEY_TYPE): String(NetworkProtocol.MSG_GAME_JOIN),
+				String(NetworkProtocol.KEY_CHANNEL_ID): _channel_id,
+			}
+		)
 	)
-	_poll_inflight = false
-	if not response.get("ok", false):
-		return
-	var data: Variant = response.get("data")
-	if typeof(data) == TYPE_DICTIONARY:
-		snapshot_received.emit(data as Dictionary)
+	status_received.emit("game_join sent")
 
 func _handle_socket_message(data: Dictionary) -> void:
-	var message_type: String = data.get("type", "")
-	if message_type == "game_action_error":
-		var error_message: String = str(data.get("error", "Unknown error"))
-		error_received.emit(error_message)
+	var message_type: String = str(data.get(NetworkProtocol.KEY_TYPE, ""))
+	var payload: Dictionary = _dictionary_or_empty(data.get(NetworkProtocol.KEY_PAYLOAD))
+
+	if message_type == String(NetworkProtocol.MSG_GAME_SNAPSHOT):
+		_game_ready = true
+		snapshot_received.emit(payload)
+		status_received.emit("Snapshot received")
+	elif message_type == String(NetworkProtocol.MSG_GAME_STATE_UPDATE):
+		# Merge logic could happen here or in game_world.gd
+		# For now, pass it through as update
+		update_received.emit(payload)
+	elif message_type == String(NetworkProtocol.MSG_ACTION_RESULT):
+		var missing_action_fields: Array[String] = _missing_action_result_required_fields(payload)
+		if not missing_action_fields.is_empty():
+			status_received.emit("WARN: malformed action_result missing: %s" % ", ".join(missing_action_fields))
+			action_result_received.emit(payload)
+			return
+		action_result_received.emit(payload)
+		var success: bool = bool(payload.get(NetworkProtocol.KEY_SUCCESS, false))
+		var msg: String = str(payload.get(NetworkProtocol.KEY_MESSAGE, ""))
+		if not success:
+			var error_obj: Variant = payload.get(NetworkProtocol.KEY_ERROR)
+			var error_text = "Unknown error"
+			if typeof(error_obj) == TYPE_DICTIONARY:
+				var error_data: Dictionary = error_obj
+				error_text = str(error_data.get(NetworkProtocol.KEY_MESSAGE, "Unknown error"))
+			error_received.emit(error_text)
+		else:
+			if not msg.is_empty():
+				status_received.emit(msg)
+	elif message_type == String(NetworkProtocol.MSG_ERROR):
+		var msg: String = str(payload.get(NetworkProtocol.KEY_MESSAGE, "Unknown system error"))
+		error_received.emit(msg)
+	elif message_type == String(NetworkProtocol.MSG_GAME_JOIN_ACK):
+		var status_code: int = int(payload.get("status_code", 0))
+		var ready: bool = bool(payload.get("ready", false))
+		var msg: String = str(payload.get(NetworkProtocol.KEY_MESSAGE, ""))
+		if status_code == 200 and ready:
+			status_received.emit("game_join ok")
+			if not msg.is_empty():
+				status_received.emit(msg)
+		else:
+			_game_ready = false
+			error_received.emit(msg if not msg.is_empty() else "game_join failed")
+	elif message_type == String(NetworkProtocol.MSG_PONG):
+		_handle_heartbeat_pong(payload)
+
+func _missing_action_result_required_fields(payload: Dictionary) -> Array[String]:
+	var missing: Array[String] = []
+	if not payload.has(NetworkProtocol.KEY_SUCCESS):
+		missing.append(String(NetworkProtocol.KEY_SUCCESS))
+	if not payload.has(NetworkProtocol.KEY_ACTION_TYPE):
+		missing.append(String(NetworkProtocol.KEY_ACTION_TYPE))
+	if not payload.has(NetworkProtocol.KEY_EXECUTOR_ID):
+		missing.append(String(NetworkProtocol.KEY_EXECUTOR_ID))
+	if not payload.has(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID):
+		missing.append(String(NetworkProtocol.KEY_ACTIVE_TURN_USER_ID))
+	return missing
+
+func _dictionary_or_empty(value: Variant) -> Dictionary:
+	if typeof(value) == TYPE_DICTIONARY:
+		return value
+	return {}
+
+# P1: _tick_heartbeat removed - replaced by _on_heartbeat_timeout Timer callback
+
+func _send_heartbeat_ping() -> void:
+	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
-	if message_type == "game_state_update":
-		var snapshot: Variant = data.get("snapshot", {})
-		if typeof(snapshot) == TYPE_DICTIONARY:
-			snapshot_received.emit(snapshot as Dictionary)
-		return
-	if message_type == "game_action":
-		var snapshot_action: Variant = data.get("snapshot", {})
-		if typeof(snapshot_action) == TYPE_DICTIONARY:
-			snapshot_received.emit(snapshot_action as Dictionary)
-		update_received.emit(data)
+	if _awaiting_pong:
+		_missed_pongs += 1
+		if _missed_pongs >= 2:
+			heartbeat_status_changed.emit(false, -1, _missed_pongs)
+			status_received.emit("Heartbeat stale (missed %s)" % _missed_pongs)
+	_last_ping_sent_ms = Time.get_ticks_msec()
+	_awaiting_pong = true
+	_ws.send_text(
+		JSON.stringify(
+			{
+				String(NetworkProtocol.KEY_TYPE): String(NetworkProtocol.MSG_PING),
+				String(NetworkProtocol.KEY_PAYLOAD): {
+					"sent_at_ms": _last_ping_sent_ms,
+				}
+			}
+		)
+	)
+
+func _handle_heartbeat_pong(payload: Dictionary) -> void:
+	var now_ms: int = Time.get_ticks_msec()
+	var sent_at_ms: int = int(payload.get("sent_at_ms", 0))
+	var latency_ms: int = -1
+	if sent_at_ms > 0 and sent_at_ms <= now_ms:
+		latency_ms = now_ms - sent_at_ms
+	_awaiting_pong = false
+	_missed_pongs = 0
+	heartbeat_status_changed.emit(true, latency_ms, 0)
+	if latency_ms >= 0:
+		status_received.emit("Heartbeat OK (%sms)" % latency_ms)
+	else:
+		status_received.emit("Heartbeat OK")
+
+func _reset_heartbeat_state() -> void:
+	_awaiting_pong = false
+	_last_ping_sent_ms = 0
+	_missed_pongs = 0
 
 func _request_json(method: int, path: String, body: Dictionary = {}, http_request: HTTPRequest = null) -> Dictionary:
 	var request_node: HTTPRequest = http_request if http_request != null else _http

@@ -26,7 +26,7 @@ The client SHALL join #game and load the current game snapshot as defined by the
 #### Scenario: Successful join
 
 - **WHEN** the client joins the #game channel
-- **THEN** it receives a snapshot containing players, obstacles, map size, and active turn
+- **THEN** it receives a snapshot containing players, obstacles, battlefield payload, map size, and active turn
 - **AND** it renders the entities based on the snapshot data
 
 ### Requirement: Turn Command Submission
@@ -39,11 +39,11 @@ The client SHALL submit turn commands using the shared command grammar: move up,
 - **THEN** the client sends the move command to the backend
 - **AND** the client awaits an acknowledgement or error response
 
-#### Scenario: Force command when out of turn
+#### Scenario: Out-of-turn command
 
 - **WHEN** the player sends a move while it is not their turn
-- **THEN** the client sends the command with force enabled
-- **AND** it logs the action as a ghost turn
+- **THEN** the client still sends the command via WebSocket
+- **AND** it displays the backend rejection/error without applying local state changes
 
 ### Requirement: Apply State Updates
 
@@ -53,6 +53,26 @@ The client SHALL apply state updates from WebSocket broadcasts as defined by the
 
 - **WHEN** a state update is received
 - **THEN** the client updates player positions, health, and obstacles
+
+### Requirement: Backend-Authoritative Battlefield Rendering
+
+The client SHALL treat snapshot battlefield payload as authoritative for network-mode world rendering.
+
+#### Scenario: Snapshot contains battlefield props and buffer
+
+- **WHEN** a snapshot includes battlefield props and buffer tiles
+- **THEN** the client renders trees/rocks and buffer blocking from payload data
+- **AND** it does not run local random battlefield generation for network sync
+
+### Requirement: Network Diagnostics
+
+The client SHALL expose connection diagnostics for easier join/debug troubleshooting.
+
+#### Scenario: Join and runtime diagnostics
+
+- **WHEN** the client enters network mode and joins #game
+- **THEN** it shows status transitions, heartbeat health, and connection state in UI
+- **AND** it writes network logs to a file in the project `logs/` directory
 
 ### Requirement: NPC Visual Differentiation
 

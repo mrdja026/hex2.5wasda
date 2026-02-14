@@ -17,3 +17,4 @@ config/features=PackedStringArray("4.6")
 [autoload]
 
 GameNetwork="*res://scripts/game_network.gd"
+GameLogger="*res://scripts/game_logger.gd"

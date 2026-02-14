@@ -40,6 +40,7 @@ shadow_offset = Vector2(2, 2)
 
 [node name="Game" type="Node3D"]
 script = ExtResource(1)
+use_networked_game = true
 
 [node name="HexTerrain" type="Node3D" parent="."]
 script = ExtResource(2)

@@ -1,5 +1,5 @@
 ## Represents a unit in the game, managing its health, model, and animations.
-# class_name PlayerUnit
+class_name PlayerUnit
 extends Node3D
 
 signal health_changed(current: int, maximum: int)
@@ -11,6 +11,7 @@ signal health_changed(current: int, maximum: int)
 @export var attack_damage: int = 3
 @export var heal_amount: int = 2
 @export var health_bar_offset: Vector3 = Vector3(0.0, 1.6, 0.0)
+@export var backend_username: String = ""
 
 @onready var model: Node3D = $Model
 @onready var animation_player: AnimationPlayer = $AnimationPlayer
@@ -22,10 +23,12 @@ var _health_bar: Node3D
 var _health_back: MeshInstance3D
 var _health_fill: MeshInstance3D
 var _health_label: Label3D
+var _name_label: Label3D
 var _turn_marker: Label3D
 var _is_targeted: bool = false
 var _has_npc_flag: bool = false
 var _is_npc: bool = false
+var _display_name: String = ""
 
 const BAR_WIDTH: float = 0.8
 const BAR_HEIGHT: float = 0.08
@@ -38,6 +41,7 @@ func _ready() -> void:
 	_ensure_health_bar()
 	_ensure_turn_marker()
 	_update_health_bar()
+	_update_name_label()
 	_play_idle()
 
 func set_axial_position(axial: Vector2i) -> void:
@@ -52,6 +56,17 @@ func set_is_current_turn(enabled: bool) -> void:
 	if _turn_marker == null:
 		return
 	_turn_marker.visible = enabled
+
+func set_backend_identity(username: String, display_name: String = "") -> void:
+	backend_username = username
+	_display_name = display_name
+	_update_name_label()
+
+func get_display_name() -> String:
+	return _resolve_display_name()
+
+func get_is_npc() -> bool:
+	return _is_npc
 
 func apply_damage(amount: int) -> void:
 	if amount <= 0:
@@ -89,7 +104,9 @@ func is_alive() -> bool:
 func _apply_color() -> void:
 	if model == null:
 		return
-	_base_material = StandardMaterial3D.new()
+	if _base_material == null:
+		_base_material = StandardMaterial3D.new()
+		_base_material.roughness = 0.9
 	if _has_npc_flag:
 		_base_material.albedo_color = Color(0.2, 0.45, 0.9) if _is_npc else Color(0.9, 0.2, 0.2)
 	else:
@@ -112,6 +129,16 @@ func _ensure_health_bar() -> void:
 		_health_back = _health_bar.get_node("Back") as MeshInstance3D
 		_health_fill = _health_bar.get_node("Fill") as MeshInstance3D
 		_health_label = _health_bar.get_node("Label") as Label3D
+		if _health_bar.has_node("NameLabel"):
+			_name_label = _health_bar.get_node("NameLabel") as Label3D
+		else:
+			_name_label = Label3D.new()
+			_name_label.name = "NameLabel"
+			_name_label.font_size = 18
+			_name_label.position = Vector3(0.0, 0.28, 0.02)
+			_name_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			_name_label.modulate = Color(0.95, 0.95, 0.9, 1.0)
+			_health_bar.add_child(_name_label)
 		return
 	_health_bar = Node3D.new()
 	_health_bar.name = "HealthBar"
@@ -149,6 +176,14 @@ func _ensure_health_bar() -> void:
 	_health_label.position = Vector3(0.0, 0.12, 0.02)
 	_health_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_health_bar.add_child(_health_label)
+	_name_label = Label3D.new()
+	_name_label.name = "NameLabel"
+	_name_label.text = ""
+	_name_label.font_size = 18
+	_name_label.position = Vector3(0.0, 0.28, 0.02)
+	_name_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_name_label.modulate = Color(0.95, 0.95, 0.9, 1.0)
+	_health_bar.add_child(_name_label)
 
 func _ensure_turn_marker() -> void:
 	if has_node("TurnMarker"):
@@ -175,6 +210,20 @@ func _update_health_bar() -> void:
 	var offset: float = -BAR_WIDTH * 0.5 + BAR_WIDTH * ratio * 0.5
 	_health_fill.position = Vector3(offset, 0.0, 0.01)
 	_health_label.text = "%s/%s" % [health, max_health]
+
+func _resolve_display_name() -> String:
+	if not _display_name.is_empty():
+		return _display_name
+	if not backend_username.is_empty():
+		return backend_username
+	if player_id > 0:
+		return "P%s" % player_id
+	return "Player"
+
+func _update_name_label() -> void:
+	if _name_label == null:
+		return
+	_name_label.text = _resolve_display_name()
 
 func _apply_outline(enabled: bool) -> void:
 	if _meshes.is_empty():

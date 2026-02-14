@@ -20,7 +20,8 @@ Use read tool before writing to get the newest version.In code mode
 This guide outlines the best practices and coding standards for Godot 4.x development, formatted as a system prompt (or `Agents.md` equivalent) to guide an AI assistant or development team.
 
 ---
-
+# Aditional repos
+There is an aditional repo that is in the root of this repo and /some-kind-of-irc which is the backend as a source of truth for the godot game that is client.
 # Godot 4.x Development Standards (Agents.md)
 
 ## 1. Core Philosophy
@@ -96,3 +97,24 @@ res://
 *   **Ignore Files:** Ensure `.godot/`, `*.tmp`, and local `export_presets.cfg` are in `.gitignore`.
 *   **Text-Based**: Keep scenes and resources in .tscn and .tres format (text-based) to allow for Git diffs.
 <!-- OPENSPEC:END -->
+
+## Learned Lessons (Networked Game)
+
+- CRITICAL: Frontend game rendering and state must remain in parity with Godot behavior and backend snapshot contracts; do not introduce changes that break cross-client sync.
+- CRITICAL: `some-kind-of-irc/backend/tests/test_command_schema_contract.py` must always pass because it is the backend-to-Godot command contract for transport tokens.
+- CRITICAL: Both repos (Godot client and backend) must implement and emit the same transport tokens from this contract even when runtime schema validation is not yet enforced.
+- CRITICAL: Godot `game_command.payload.timestamp` must be sent as integer milliseconds (not float seconds) to stay aligned with `external_schemas/commands.json`.
+- CRITICAL: Godot must enforce strict required fields for `game_snapshot` and `game_state_update` payloads (including `turn_context` and snapshot map metadata keys).
+- CRITICAL: Numeric fields in network payloads may arrive as int-like floats after JSON parse; validation should accept int-like numeric values to avoid false negatives.
+- CRITICAL: `action_result` payloads should include `success`, `action_type`, `executor_id`, and `active_turn_user_id`; malformed events should be logged clearly without crashing gameplay flow.
+- Keep backend authoritative turn context (`attackable_target_ids` + surroundings diff) for target validity and client-side target invalidation.
+- In network mode, render battlefield props/buffer from backend snapshot payload; do not locally randomize battlefield state.
+- Keep WebSocket state and heartbeat visible in join/debug UI to avoid silent join failures.
+- Write network diagnostics to project `logs/` so sync issues can be verified post-run.
+- Map backend 64x64 coordinates deterministically to local hex world bounds for consistent rendering.
+
+## Technical Debt
+
+- Add lightweight runtime payload shape checks in Godot for `game_snapshot`/`game_state_update`.
+- Reduce script size in `scripts/Game.gd` by extracting network battlefield sync helpers into a dedicated script.
+- Add integration smoke tests for “join -> snapshot -> render players/props/buffer -> move” flow.

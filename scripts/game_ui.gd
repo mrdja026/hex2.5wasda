@@ -121,7 +121,9 @@ func update_network_console(
 	human_count: int = 0,
 	heartbeat_ok: bool = true,
 	heartbeat_latency_ms: int = -1,
-	heartbeat_missed_count: int = 0
+	heartbeat_missed_count: int = 0,
+	local_role: String = "unknown",
+	is_my_turn: bool = false
 ) -> void:
 	if network_console_label == null: return
 	var presence_text: String = "ONLINE" if is_online else "OFFLINE"
@@ -135,6 +137,7 @@ func update_network_console(
 		"URL: %s" % url,
 		"User: %s | Channel: %s" % [user_id, channel_id],
 		"Active Turn: %s" % active_turn,
+		"My Role: %s | My Turn: %s" % [local_role, "YES" if is_my_turn else "NO"],
 		"Presence: %s" % presence_text,
 		"Humans in channel: %s" % human_count,
 		"WS Heartbeat: %s" % heartbeat_text,

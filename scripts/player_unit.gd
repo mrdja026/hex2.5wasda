@@ -65,6 +65,9 @@ func set_backend_identity(username: String, display_name: String = "") -> void:
 func get_display_name() -> String:
 	return _resolve_display_name()
 
+func get_is_npc() -> bool:
+	return _is_npc
+
 func apply_damage(amount: int) -> void:
 	if amount <= 0:
 		return

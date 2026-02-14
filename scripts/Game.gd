@@ -62,6 +62,7 @@ var _network: GameNetworkClient = null
 var _network_sync: NetworkSync = null
 var _network_active_turn_id: int = 0
 var _pending_network_actions: Array[Dictionary] = []
+var _network_attackable_target_ids: Dictionary = {}
 var _is_ws_connected: bool = false
 var _online_human_count: int = 0
 var _heartbeat_ok: bool = true
@@ -479,20 +480,36 @@ func _handle_network_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("move_se"):
 		_network.send_command("move_se")
 	elif event.is_action_pressed("action_attack"):
+		var target_player: PlayerUnit = _current_target
+		if not _is_network_target_attackable(target_player):
+			var attackable_targets: Array[PlayerUnit] = _get_network_attackable_targets()
+			target_player = attackable_targets[0] if not attackable_targets.is_empty() else null
+			_set_target(target_player)
+		if target_player == null:
+			if ui:
+				ui.log_network("Attack blocked: no authoritative target in 1-hex range")
+			return
 		var target_username: String = ""
-		if _current_target != null and _current_target.has_method("get"):
-			var uname = _current_target.get("backend_username")
+		if target_player.has_method("get"):
+			var uname = target_player.get("backend_username")
 			if typeof(uname) == TYPE_STRING and not (uname as String).is_empty():
 				target_username = uname as String
+		if target_username.is_empty():
+			if ui:
+				ui.log_network("Attack blocked: target username unavailable")
+			return
 		_network.send_command("attack", target_username)
 	elif event.is_action_pressed("action_heal"):
 		_network.send_command("heal")
+	elif event.is_action_pressed("action_end_turn"):
+		_network.send_command("end_turn")
 	elif event.is_action_pressed("target_next"):
 		_cycle_target()
 
 func _on_network_snapshot_received(snapshot: Dictionary) -> void:
 	_online_human_count = _count_human_players(snapshot.get("players", []) as Array)
 	_apply_backend_status_history(snapshot)
+	_apply_network_turn_context(snapshot)
 	var battlefield_payload: Dictionary = snapshot.get("battlefield", {}) as Dictionary
 	if ui:
 		ui.log_network(
@@ -508,6 +525,7 @@ func _on_network_snapshot_received(snapshot: Dictionary) -> void:
 func _on_network_update_received(update: Dictionary) -> void:
 	_online_human_count = _count_human_players(update.get("players", []) as Array)
 	_apply_backend_status_history(update)
+	_apply_network_turn_context(update)
 	if ui:
 		ui.log_network(
 			"Update players=%s active=%s" % [
@@ -566,6 +584,8 @@ func _on_network_connection_state_changed(is_connected: bool) -> void:
 		_heartbeat_latency_ms = -1
 		_heartbeat_missed_count = 0
 		_pending_network_actions.clear()
+		_network_attackable_target_ids.clear()
+		_set_target(null)
 	_update_presence_badge()
 	_update_all_ui()
 
@@ -593,10 +613,28 @@ func _on_network_status_received(msg: String) -> void:
 func _on_network_action_result_received(payload: Dictionary) -> void:
 	if payload.has("active_turn_user_id"):
 		_network_active_turn_id = int(payload.get("active_turn_user_id", _network_active_turn_id))
+	var action_type: String = str(payload.get("action_type", ""))
+	var executor_id: int = int(payload.get("executor_id", 0))
+	var executor_name: String = _resolve_action_username(payload, "executor_username", executor_id)
 	if not bool(payload.get("success", false)):
+		var error_text: String = ""
+		var error_obj: Variant = payload.get("error")
+		if typeof(error_obj) == TYPE_DICTIONARY:
+			error_text = str((error_obj as Dictionary).get("message", ""))
+		if error_text.is_empty():
+			error_text = str(payload.get("message", ""))
+		if error_text.is_empty():
+			error_text = "Unknown error"
+		if ui:
+			ui.log_system("%s failed %s: %s" % [executor_name, action_type, error_text])
+			ui.log_network("Action failed: %s by %s | %s" % [action_type, executor_name, error_text])
 		_update_all_ui()
 		return
-	var action_type: String = str(payload.get("action_type", ""))
+	if action_type == "npc_noop":
+		if ui:
+			ui.log_system("%s skipped action" % executor_name)
+		_update_all_ui()
+		return
 	if action_type.begins_with("move_"):
 		_pending_network_actions.append(payload.duplicate(true))
 		_update_all_ui()
@@ -644,6 +682,9 @@ func _append_network_action_log(payload: Dictionary) -> void:
 		else:
 			ui.log_combat("%s did heal" % executor_name)
 		return
+	if action_type == "npc_noop":
+		ui.log_system("%s skipped action" % executor_name)
+		return
 	ui.log_combat("%s did %s" % [executor_name, action_type])
 
 func _resolve_action_username(payload: Dictionary, key: String, user_id: int) -> String:
@@ -685,16 +726,72 @@ func _apply_backend_status_history(payload: Dictionary) -> void:
 		lines.append(_format_status_history_entry(entry))
 	ui.set_status_history(lines)
 
+func _apply_network_turn_context(payload: Dictionary) -> void:
+	_network_attackable_target_ids.clear()
+	var context_data: Variant = payload.get("turn_context")
+	if typeof(context_data) != TYPE_DICTIONARY:
+		if _current_target != null:
+			_set_target(null)
+		return
+	var turn_context: Dictionary = context_data as Dictionary
+	var actor_user_id: int = int(turn_context.get("actor_user_id", 0))
+	var attackable_ids: Array = turn_context.get("attackable_target_ids", []) as Array
+	for value: Variant in attackable_ids:
+		_network_attackable_target_ids[int(value)] = true
+
+	if _network == null:
+		return
+
+	if actor_user_id != _network.user_id:
+		if _current_target != null:
+			_set_target(null)
+		return
+
+	if _current_target != null and not _is_network_target_attackable(_current_target):
+		var moved_out_of_range: bool = _did_target_leave_surroundings(turn_context, _current_target.player_id)
+		_set_target(null)
+		if ui:
+			if moved_out_of_range:
+				ui.log_network("Target moved out of 1-hex range")
+			else:
+				ui.log_network("Target no longer attackable")
+
+func _did_target_leave_surroundings(turn_context: Dictionary, target_user_id: int) -> bool:
+	var diff_data: Variant = turn_context.get("surroundings_diff")
+	if typeof(diff_data) != TYPE_DICTIONARY:
+		return false
+	var diff: Dictionary = diff_data as Dictionary
+	var removed: Array = diff.get("removed", []) as Array
+	var target_entity_id: String = "player:%s" % target_user_id
+	for item: Variant in removed:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var entry: Dictionary = item as Dictionary
+		if str(entry.get("entity_id", "")) == target_entity_id:
+			return true
+	return false
+
 func _format_status_history_entry(entry: Dictionary) -> String:
 	var event_type: String = str(entry.get("type", "status"))
 	if event_type == "action_result":
 		var action_type: String = str(entry.get("action_type", ""))
 		var executor: String = str(entry.get("executor_username", entry.get("executor_id", "?")))
 		var message: String = str(entry.get("message", ""))
-		var before_turn: String = str(entry.get("before_turn_user_id", "-"))
-		var after_turn: String = str(entry.get("after_turn_user_id", "-"))
+		var before_turn: String = _format_turn_id_value(entry.get("before_turn_user_id", "-"))
+		var after_turn: String = _format_turn_id_value(entry.get("after_turn_user_id", "-"))
 		return "%s %s | %s | turn %s -> %s" % [executor, action_type, message, before_turn, after_turn]
 	return str(entry.get("message", "status"))
+
+func _format_turn_id_value(value: Variant) -> String:
+	if typeof(value) == TYPE_NIL:
+		return "-"
+	if typeof(value) == TYPE_INT:
+		return str(int(value))
+	if typeof(value) == TYPE_FLOAT:
+		var number: float = float(value)
+		if is_equal_approx(number, floor(number)):
+			return str(int(number))
+	return str(value)
 
 # --- UI and state helpers ---
 
@@ -718,16 +815,32 @@ func _render_join_status() -> void:
 		heartbeat_text = "STALE (%s missed)" % _heartbeat_missed_count
 	elif _heartbeat_latency_ms >= 0:
 		heartbeat_text = "OK (%sms)" % _heartbeat_latency_ms
-	join_status.text = "%s\nPresence: %s\nHeartbeat: %s" % [
+	var role_text: String = _local_role_text()
+	var turn_text: String = "-"
+	if _network_active_turn_id > 0:
+		turn_text = str(_network_active_turn_id)
+	join_status.text = "%s\nPresence: %s\nHeartbeat: %s\nRole: %s | Active Turn: %s" % [
 		_join_status_message,
 		"ONLINE" if _is_online_presence() else "OFFLINE",
 		heartbeat_text,
+		role_text,
+		turn_text,
 	]
 
 func _player_log_name(player: PlayerUnit) -> String:
 	if player == null:
 		return "Unknown"
 	return player.get_display_name()
+
+func _local_role_text() -> String:
+	if not _use_networked_game or _network == null:
+		return "offline-human"
+	var local_player: PlayerUnit = _get_player_by_id(_network.user_id)
+	if local_player == null:
+		return "unknown"
+	if local_player.get_is_npc():
+		return "npc"
+	return "human"
 
 func _format_player_surroundings(player: PlayerUnit) -> String:
 	if player == null or world == null:
@@ -762,6 +875,32 @@ func _is_my_turn() -> bool:
 	else:
 		return _is_human_turn()
 
+func _is_network_target_attackable(target: PlayerUnit) -> bool:
+	if target == null or _network == null:
+		return false
+	if _network_active_turn_id != _network.user_id:
+		return false
+	return _network_attackable_target_ids.has(target.player_id)
+
+func _get_network_attackable_targets() -> Array[PlayerUnit]:
+	var candidates: Array[PlayerUnit] = []
+	if _network == null:
+		return candidates
+	for player: PlayerUnit in _players:
+		if player.player_id == _network.user_id:
+			continue
+		if not player.is_alive():
+			continue
+		if _network_attackable_target_ids.has(player.player_id):
+			candidates.append(player)
+	candidates.sort_custom(
+		func(a: PlayerUnit, b: PlayerUnit) -> bool:
+			if a.health == b.health:
+				return a.player_id < b.player_id
+			return a.health < b.health
+	)
+	return candidates
+
 func _get_adjacent_targets(player: PlayerUnit) -> Array[PlayerUnit]:
 	var targets: Array[PlayerUnit] = []
 	var player_axial: Vector2i = player.axial_position
@@ -791,14 +930,16 @@ func _cycle_target() -> void:
 	# Only allow targeting on this client's turn
 	if not _is_my_turn():
 		return
-	var my_player: PlayerUnit = null
+	var targets: Array[PlayerUnit] = []
 	if _use_networked_game and _network:
-		my_player = _get_player_by_id(_network.user_id)
-	elif turn_manager:
-		my_player = turn_manager.get_active_player() as PlayerUnit
-	if my_player == null:
-		return
-	var targets: Array[PlayerUnit] = _get_adjacent_targets(my_player)
+		targets = _get_network_attackable_targets()
+	else:
+		var my_player: PlayerUnit = null
+		if turn_manager:
+			my_player = turn_manager.get_active_player() as PlayerUnit
+		if my_player == null:
+			return
+		targets = _get_adjacent_targets(my_player)
 	if targets.is_empty():
 		_set_target(null)
 		return
@@ -817,6 +958,8 @@ func _update_all_ui() -> void:
 			ids.append(p.player_id)
 		ids.sort()
 		if ui:
+			var local_role: String = _local_role_text()
+			var is_my_turn_now: bool = _network_active_turn_id > 0 and _network_active_turn_id == _network.user_id
 			ui.update_turn_panel_online(ids, _network_active_turn_id, _players.size())
 			ui.update_network_console(
 				_network.base_url,
@@ -827,7 +970,9 @@ func _update_all_ui() -> void:
 				_online_human_count,
 				_heartbeat_ok,
 				_heartbeat_latency_ms,
-				_heartbeat_missed_count
+				_heartbeat_missed_count,
+				local_role,
+				is_my_turn_now
 			)
 	else:
 		var active: Node = null
